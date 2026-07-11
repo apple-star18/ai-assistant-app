@@ -21,10 +21,13 @@ dependencies = [
 name = "ai-assistant-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "png 0.17.16",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+ "windows",
 ]
 
 [[package]]

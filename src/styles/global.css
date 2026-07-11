@@ -1,6 +1,6 @@
 :root {
-  color: #17202a;
-  background: #f6f7f9;
+  color: #1d232c;
+  background: #f4f6f8;
   font-family:
     Inter,
     ui-sans-serif,
@@ -17,10 +17,18 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 button,
@@ -30,56 +38,222 @@ select {
   font: inherit;
 }
 
-.app-shell {
-  display: grid;
-  min-height: 100vh;
+button {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
   place-items: center;
-  padding: 32px;
-}
-
-.status-panel {
-  width: min(100%, 560px);
-  border: 1px solid #d8dde4;
-  border-radius: 8px;
+  border: 1px solid #c9d0d8;
+  border-radius: 6px;
   background: #ffffff;
-  padding: 32px;
+  color: #202833;
+  cursor: default;
+  line-height: 1;
+  padding: 0;
+  white-space: nowrap;
 }
 
-.eyebrow {
-  margin: 0 0 8px;
-  color: #5f6b7a;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
+button:hover {
+  background: #eef3f8;
 }
 
-h1 {
-  margin: 0 0 24px;
-  font-size: 2rem;
-  line-height: 1.15;
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #1677c7;
+  outline-offset: 2px;
 }
 
-dl {
+.browser-shell {
   display: grid;
-  gap: 14px;
-  margin: 0;
+  width: 100%;
+  height: 100%;
+  grid-template-rows: 64px 1fr;
+  background: #ffffff;
 }
 
-dl > div {
+.browser-toolbar {
   display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  border-top: 1px solid #eceff3;
-  padding-top: 14px;
+  height: 64px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #ccd4dd;
+  background: #f7f9fb;
+  overflow: hidden;
+  padding: 12px;
 }
 
-dt {
-  color: #5f6b7a;
-  font-weight: 600;
+.window-title {
+  display: flex;
+  width: 132px;
+  min-width: 112px;
+  flex: 0 1 132px;
+  align-items: center;
+  gap: 8px;
+  color: #2a3441;
+  font-size: 0.92rem;
+  font-weight: 650;
 }
 
-dd {
-  margin: 0;
-  text-align: right;
+.window-title span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-mark {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: #1f7a5b;
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.navigation-controls {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(4, 36px);
+  gap: 6px;
+}
+
+.address-bar {
+  min-width: 170px;
+  flex: 1 1 280px;
+}
+
+.address-bar input {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #bfc8d2;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #17202a;
+  padding: 0 12px;
+  line-height: 36px;
+}
+
+.go-button,
+.danger-button,
+.caption-button,
+.caption-submit-button {
+  width: auto;
+  min-width: 54px;
+  padding: 0 12px;
+  font-weight: 650;
+}
+
+.go-button {
+  min-width: 52px;
+}
+
+.danger-button {
+  min-width: 62px;
+}
+
+.danger-button {
+  border-color: #d4b8b8;
+  color: #8b1e2d;
+}
+
+.danger-button:hover {
+  background: #fbefef;
+}
+
+.caption-button {
+  min-width: 116px;
+  border-color: #adc7bd;
+  color: #15533e;
+}
+
+.caption-button:hover {
+  background: #edf7f3;
+}
+
+.caption-submit-button {
+  min-width: 128px;
+  border-color: #b8c2d6;
+  color: #263d6f;
+}
+
+.caption-submit-button:hover:not(:disabled) {
+  background: #eef3fb;
+}
+
+.caption-submit-button:disabled {
+  color: #8792a0;
+  background: #f4f6f8;
+  cursor: not-allowed;
+}
+
+.automation-controls {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(3, 36px) minmax(58px, auto);
+  gap: 6px;
+}
+
+.automation-controls button {
+  width: auto;
+  min-width: 36px;
+  padding: 0 10px;
+  color: #43345f;
+}
+
+.browser-status {
+  display: flex;
+  min-width: 84px;
+  max-width: 220px;
+  flex: 1 2 120px;
+  align-items: center;
+  gap: 8px;
+  color: #526170;
+  font-size: 0.82rem;
+}
+
+.browser-status span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #1f7a5b;
+}
+
+.status-dot.loading {
+  background: #d78916;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .browser-toolbar {
+    gap: 6px;
+  }
+
+  .window-title,
+  .browser-status,
+  .danger-button {
+    display: none;
+  }
 }

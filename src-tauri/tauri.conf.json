@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AI Assistant",
+  "productName": "AI Assistant Browser",
   "version": "0.1.0",
-  "identifier": "com.example.ai-assistant",
+  "identifier": "com.aiassistant.browser",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -13,11 +13,12 @@
     "windows": [
       {
         "label": "main",
-        "title": "AI Assistant",
+        "title": "AI Assistant Browser",
         "width": 1200,
         "height": 800,
-        "minWidth": 960,
-        "minHeight": 640
+        "minWidth": 720,
+        "minHeight": 640,
+        "contentProtected": true
       }
     ],
     "security": {
@@ -26,10 +27,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
+    "icon": ["icons/icon.ico"],
     "copyright": "",
     "category": "Productivity",
-    "shortDescription": "Desktop AI assistant",
-    "longDescription": "A production-grade desktop AI assistant application foundation."
+    "shortDescription": "Secure desktop browser for AI workflows",
+    "longDescription": "A secure, fast Windows desktop mini browser for AI productivity workflows."
   }
 }
