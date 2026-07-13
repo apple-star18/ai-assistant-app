@@ -11,11 +11,13 @@ use serde_json::Value;
 use tauri::{
     webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder},
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
-    Size, State, Url, WebviewUrl, WebviewWindow, Window, WindowEvent,
+    Size, State, Url, WebviewUrl, Window, WindowEvent,
 };
+use windows::Win32::Foundation::COLORREF;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
-    WINDOW_DISPLAY_AFFINITY,
+    GetWindowDisplayAffinity, GetWindowLongPtrW, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA, WDA_EXCLUDEFROMCAPTURE,
+    WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED,
 };
 
 use crate::screenshot::CaptureMask;
@@ -26,6 +28,9 @@ const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
 const MAX_TOOLBAR_HEIGHT: f64 = 420.0;
+const DEFAULT_WINDOW_OPACITY: f64 = 1.0;
+const MIN_WINDOW_OPACITY: f64 = 0.4;
+const MAX_WINDOW_OPACITY: f64 = 1.0;
 const SCRIPT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +40,7 @@ pub struct BrowserSnapshot {
     title: String,
     is_loading: bool,
     is_content_protected: bool,
+    window_opacity: f64,
     last_download: Option<DownloadSnapshot>,
     last_error: Option<String>,
 }
@@ -46,6 +52,7 @@ impl Default for BrowserSnapshot {
             title: "ChatGPT".to_string(),
             is_loading: true,
             is_content_protected: false,
+            window_opacity: DEFAULT_WINDOW_OPACITY,
             last_download: None,
             last_error: None,
         }
@@ -91,10 +98,48 @@ pub struct ResizeRequest {
     toolbar_height: f64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DebugLayoutRequest {
+    source: String,
+    frontend: FrontendDebugLayout,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendDebugLayout {
+    is_transparency_open: bool,
+    top_height: Option<f64>,
+    top_layer_rect: Option<FrontendDebugRect>,
+    transparency_button_rect: Option<FrontendDebugRect>,
+    transparency_row_rect: Option<FrontendDebugRect>,
+    transparency_control_rect: Option<FrontendDebugRect>,
+    transparency_range_rect: Option<FrontendDebugRect>,
+    top_layer_z_index: String,
+    transparency_control_z_index: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendDebugRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    top: f64,
+    bottom: f64,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetContentProtectionRequest {
     is_content_protected: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetWindowOpacityRequest {
+    opacity: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,7 +168,6 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         WebviewUrl::External(CHATGPT_HOME_URL.parse().expect("valid ChatGPT URL")),
     )
     .data_directory(profile_dir)
-    .auto_resize()
     .accept_first_mouse(true)
     .on_navigation(|url| is_allowed_navigation_url(url))
     .on_new_window(|_, _| NewWindowResponse::Deny)
@@ -154,7 +198,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         move |_, event| handle_download_event(&app_handle, event)
     });
 
-    let bounds = browser_bounds(&main_window)?;
+    let bounds = browser_bounds(&main_window.as_ref().window())?;
     main_window
         .as_ref()
         .window()
@@ -266,6 +310,9 @@ pub fn browser_resize(
     request: ResizeRequest,
 ) -> CommandResult<BrowserSnapshot> {
     let toolbar_height = validate_toolbar_height(request.toolbar_height)?;
+    log_browser_debug(format_args!(
+        "browser_resize requested toolbar_height={toolbar_height}"
+    ));
     {
         let mut layout = state.layout()?;
         layout.toolbar_height = toolbar_height;
@@ -273,6 +320,36 @@ pub fn browser_resize(
 
     resize_browser_to_window(&app);
     Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
+pub fn browser_debug_layout(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: DebugLayoutRequest,
+) -> CommandResult<()> {
+    let frontend = &request.frontend;
+    log_browser_debug(format_args!(
+        "browser_debug_layout source={} frontend is_transparency_open={} top_height={:?} top_layer_z_index={} transparency_control_z_index={} top_layer={} button={} row={} control={} range={}",
+        request.source,
+        frontend.is_transparency_open,
+        frontend.top_height,
+        frontend.top_layer_z_index,
+        frontend.transparency_control_z_index,
+        format_frontend_rect(frontend.top_layer_rect.as_ref()),
+        format_frontend_rect(frontend.transparency_button_rect.as_ref()),
+        format_frontend_rect(frontend.transparency_row_rect.as_ref()),
+        format_frontend_rect(frontend.transparency_control_rect.as_ref()),
+        format_frontend_rect(frontend.transparency_range_rect.as_ref())
+    ));
+
+    let toolbar_height = state.layout()?.toolbar_height;
+    log_browser_debug(format_args!(
+        "browser_debug_layout stored_toolbar_height={toolbar_height}"
+    ));
+    log_native_browser_layout(&app, toolbar_height, &request.source);
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -296,6 +373,33 @@ pub fn browser_set_content_protected(
 
     update_snapshot(&app, |snapshot| {
         snapshot.is_content_protected = is_content_protected;
+        snapshot.last_error = None;
+    });
+
+    Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
+pub fn browser_set_window_opacity(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: SetWindowOpacityRequest,
+) -> CommandResult<BrowserSnapshot> {
+    let opacity = validate_window_opacity(request.opacity)?;
+    let main_window = match app.get_window(MAIN_WINDOW_LABEL) {
+        Some(window) => window,
+        None => {
+            return Err(BrowserCommandError {
+                code: "window_unavailable",
+                message: "Main window is not available.".to_string(),
+            })
+        }
+    };
+
+    apply_window_opacity(&main_window, opacity)?;
+
+    update_snapshot(&app, |snapshot| {
+        snapshot.window_opacity = opacity;
         snapshot.last_error = None;
     });
 
@@ -331,6 +435,26 @@ fn apply_window_content_protection(
     })?;
 
     Ok(is_content_protected)
+}
+
+fn apply_window_opacity(window: &Window, opacity: f64) -> CommandResult<()> {
+    let hwnd = window.hwnd().map_err(BrowserCommandError::from_tauri)?;
+    let current_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let layered_style = current_style | WS_EX_LAYERED.0 as isize;
+    unsafe {
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, layered_style);
+    }
+
+    let alpha = (opacity * u8::MAX as f64).round() as u8;
+    log_browser_debug(format_args!(
+        "apply_window_opacity opacity={opacity} alpha={alpha} current_style={current_style} layered_style={layered_style}"
+    ));
+    unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) }.map_err(|error| {
+        BrowserCommandError {
+            code: "native_error",
+            message: format!("Failed to update window transparency: {error}"),
+        }
+    })
 }
 
 fn read_window_content_protection(window: &Window) -> CommandResult<bool> {
@@ -511,7 +635,10 @@ fn resize_browser_to_window(app: &AppHandle) {
 }
 
 fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize) {
-    let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+    let Some(main_window) = app.get_window(MAIN_WINDOW_LABEL) else {
+        log_browser_debug(format_args!(
+            "resize_browser_to_window_size main_window=unavailable"
+        ));
         return;
     };
 
@@ -525,6 +652,9 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
         .lock()
         .map(|layout| layout.toolbar_height)
         .unwrap_or(TOOLBAR_HEIGHT);
+    log_browser_debug(format_args!(
+        "resize_browser_to_window_size toolbar_height={toolbar_height} window_size={window_size:?}"
+    ));
     let bounds = match browser_fit_bounds(&main_window, toolbar_height, window_size) {
         Ok(bounds) => bounds,
         Err(error) => {
@@ -535,24 +665,109 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
         }
     };
 
+    if let Err(error) = browser.set_auto_resize(false) {
+        log_browser_debug(format_args!(
+            "browser.set_auto_resize(false) failed error={error}"
+        ));
+        update_snapshot(app, |snapshot| {
+            snapshot.last_error = Some(format!("Failed to disable browser auto-resize: {error}"));
+        });
+        return;
+    }
+
+    log_browser_debug(format_args!("browser.set_auto_resize(false) complete"));
+
     if let Err(error) = browser.set_bounds(Rect {
         position: bounds.position,
         size: bounds.size,
     }) {
+        log_browser_debug(format_args!("browser.set_bounds failed error={error}"));
         update_snapshot(app, |snapshot| {
             snapshot.last_error = Some(format!("Failed to set browser WebView bounds: {error}"));
         });
         return;
     }
 
-    if let Err(error) = browser.set_auto_resize(true) {
-        update_snapshot(app, |snapshot| {
-            snapshot.last_error = Some(format!("Failed to enable browser auto-resize: {error}"));
-        });
+    log_browser_debug(format_args!(
+        "browser.set_bounds position={:?} size={:?}",
+        bounds.position, bounds.size
+    ));
+
+    match browser.bounds() {
+        Ok(actual_bounds) => {
+            log_browser_debug(format_args!(
+                "browser.bounds actual position={:?} size={:?}",
+                actual_bounds.position, actual_bounds.size
+            ));
+        }
+        Err(error) => {
+            log_browser_debug(format_args!("browser.bounds readback failed error={error}"));
+        }
     }
 }
 
-fn browser_bounds(window: &WebviewWindow) -> tauri::Result<Rect> {
+fn log_native_browser_layout(app: &AppHandle, toolbar_height: f64, source: &str) {
+    let Some(main_window) = app.get_window(MAIN_WINDOW_LABEL) else {
+        log_browser_debug(format_args!(
+            "browser_debug_layout source={source} main_window=unavailable"
+        ));
+        return;
+    };
+
+    let scale_factor = main_window.scale_factor().ok();
+    let inner_size = main_window.inner_size().ok();
+    let inner_position = main_window.inner_position().ok();
+    log_browser_debug(format_args!(
+        "browser_debug_layout source={source} main_window scale_factor={scale_factor:?} inner_position={inner_position:?} inner_size={inner_size:?}"
+    ));
+
+    match browser_fit_bounds(&main_window, toolbar_height, BrowserWindowSize::Current) {
+        Ok(expected_bounds) => {
+            log_browser_debug(format_args!(
+                "browser_debug_layout source={source} expected_browser position={:?} size={:?}",
+                expected_bounds.position, expected_bounds.size
+            ));
+        }
+        Err(error) => {
+            log_browser_debug(format_args!(
+                "browser_debug_layout source={source} expected_browser failed error={error}"
+            ));
+        }
+    }
+
+    let Some(browser) = app.get_webview(BROWSER_WEBVIEW_LABEL) else {
+        log_browser_debug(format_args!(
+            "browser_debug_layout source={source} browser_webview=unavailable"
+        ));
+        return;
+    };
+
+    match browser.bounds() {
+        Ok(actual_bounds) => {
+            log_browser_debug(format_args!(
+                "browser_debug_layout source={source} actual_browser position={:?} size={:?}",
+                actual_bounds.position, actual_bounds.size
+            ));
+        }
+        Err(error) => {
+            log_browser_debug(format_args!(
+                "browser_debug_layout source={source} actual_browser failed error={error}"
+            ));
+        }
+    }
+}
+
+fn format_frontend_rect(rect: Option<&FrontendDebugRect>) -> String {
+    match rect {
+        Some(rect) => format!(
+            "x={} y={} width={} height={} top={} bottom={}",
+            rect.x, rect.y, rect.width, rect.height, rect.top, rect.bottom
+        ),
+        None => "missing".to_string(),
+    }
+}
+
+fn browser_bounds(window: &Window) -> tauri::Result<Rect> {
     let bounds = browser_fit_bounds(window, TOOLBAR_HEIGHT, BrowserWindowSize::Current)?;
 
     Ok(Rect {
@@ -574,7 +789,7 @@ enum BrowserWindowSize {
 }
 
 fn browser_fit_bounds(
-    window: &WebviewWindow,
+    window: &Window,
     toolbar_height: f64,
     window_size: BrowserWindowSize,
 ) -> tauri::Result<BrowserFitBounds> {
@@ -588,6 +803,9 @@ fn browser_fit_bounds(
     };
     let logical_toolbar_height = toolbar_height.round().max(1.0);
     let logical_browser_height = (logical_size.height - logical_toolbar_height).max(1.0);
+    log_browser_debug(format_args!(
+        "browser_fit_bounds scale_factor={scale_factor} logical_size={logical_size:?} toolbar_height={toolbar_height} logical_toolbar_height={logical_toolbar_height} logical_browser_height={logical_browser_height}"
+    ));
 
     Ok(BrowserFitBounds {
         position: Position::Logical(LogicalPosition::new(0.0, logical_toolbar_height)),
@@ -611,6 +829,22 @@ fn validate_toolbar_height(toolbar_height: f64) -> CommandResult<f64> {
     Ok(toolbar_height)
 }
 
+fn validate_window_opacity(opacity: f64) -> CommandResult<f64> {
+    if !opacity.is_finite() {
+        return Err(BrowserCommandError::validation(
+            "Window opacity must be a finite number.",
+        ));
+    }
+
+    if !(MIN_WINDOW_OPACITY..=MAX_WINDOW_OPACITY).contains(&opacity) {
+        return Err(BrowserCommandError::validation(
+            "Window opacity is outside the allowed range.",
+        ));
+    }
+
+    Ok(opacity)
+}
+
 fn browser_profile_dir(app: &App) -> tauri::Result<PathBuf> {
     Ok(app.path().app_data_dir()?.join("browser-profile"))
 }
@@ -623,6 +857,10 @@ fn sanitize_title(title: &str) -> String {
     } else {
         title.chars().take(120).collect()
     }
+}
+
+fn log_browser_debug(args: std::fmt::Arguments<'_>) {
+    eprintln!("[ai-assistant-browser] {args}");
 }
 
 trait BrowserStoreExt {

@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   applyHotkeySettings,
+  debugBrowserLayout,
   getAutomationState,
   focusBrowser,
   getBrowserState,
@@ -17,12 +18,15 @@ import {
   reloadBrowser,
   resizeBrowser,
   setBrowserContentProtected,
+  setBrowserWindowOpacity,
   startCaptions,
   stopCaptions,
   submitCaptionsToChatGpt,
 } from './lib/tauri/client';
 import type {
   AutomationState,
+  BrowserDebugLayoutRequest,
+  BrowserDebugRect,
   BrowserState,
   CaptionState,
   HotkeyBindingRequest,
@@ -66,6 +70,7 @@ const initialBrowserState: BrowserState = {
   title: 'ChatGPT',
   isLoading: true,
   isContentProtected: false,
+  windowOpacity: 1,
   lastDownload: null,
   lastError: null,
 };
@@ -96,12 +101,17 @@ const initialHotkeyState: HotkeyState = {
   lastError: null,
 };
 
+const DEBUG_LOG_PREFIX = '[ai-assistant-browser]';
+const TRANSPARENCY_CONTROL_WIDTH = 220;
+const TRANSPARENCY_CONTROL_MARGIN = 8;
+
 export function App() {
   return <BrowserWindow />;
 }
 
 function BrowserWindow() {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
   const [browserState, setBrowserState] = useState<BrowserState>(initialBrowserState);
   const [captionState, setCaptionState] = useState<CaptionState>(initialCaptionState);
   const [automationState, setAutomationState] = useState<AutomationState>(initialAutomationState);
@@ -109,6 +119,8 @@ function BrowserWindow() {
   const [address, setAddress] = useState(initialBrowserState.currentUrl);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isTransparencyOpen, setIsTransparencyOpen] = useState(false);
+  const [transparencyControlLeft, setTransparencyControlLeft] = useState(TRANSPARENCY_CONTROL_MARGIN);
   const [shortcutDraft, setShortcutDraft] =
     useState<Record<HotkeyAction, string>>(defaultShortcutDraft);
 
@@ -201,6 +213,38 @@ function BrowserWindow() {
   }, [hotkeyState, isSettingsOpen]);
 
   useEffect(() => {
+    if (!isTransparencyOpen) {
+      return;
+    }
+
+    const logTransparencyMetrics = () => {
+      updateTransparencyControlPosition();
+      logElementMetrics('transparency:top-layer-metrics', '.browser-top-layer');
+      logElementMetrics('transparency:button-metrics', '#transparency-button');
+      logElementMetrics('transparency:popover-row-metrics', '.transparency-popover-row');
+      logElementMetrics('transparency:control-metrics', '#transparency-controls');
+      logElementMetrics('transparency:range-metrics', '#transparency-opacity-range');
+      void sendBrowserDebugLayout('transparency:metrics');
+    };
+
+    logTransparencyMetrics();
+    const firstFrame = window.requestAnimationFrame(() => {
+      logTransparencyMetrics();
+    });
+    const settleTimer = window.setTimeout(logTransparencyMetrics, 150);
+
+    window.addEventListener('resize', logTransparencyMetrics);
+    window.visualViewport?.addEventListener('resize', logTransparencyMetrics);
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('resize', logTransparencyMetrics);
+      window.visualViewport?.removeEventListener('resize', logTransparencyMetrics);
+    };
+  }, [isTransparencyOpen]);
+
+  useEffect(() => {
     let animationFrame: number | null = null;
     const settleTimers: number[] = [];
     let isDisposed = false;
@@ -218,15 +262,28 @@ function BrowserWindow() {
         }
 
         const toolbarHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+        logDebug('resize:measured-top-layer', {
+          toolbarHeight,
+          isSettingsOpen,
+          isTransparencyOpen,
+        });
 
         void resizeBrowser(toolbarHeight)
           .then((state) => {
             if (!isDisposed) {
+              logDebug('resize:complete', {
+                toolbarHeight,
+                windowOpacity: state.windowOpacity,
+              });
               setBrowserState(state);
             }
           })
           .catch((error: unknown) => {
             if (!isDisposed) {
+              logDebug('resize:failed', {
+                toolbarHeight,
+                error: getErrorMessage(error),
+              });
               setCommandError(getErrorMessage(error));
             }
           });
@@ -274,7 +331,7 @@ function BrowserWindow() {
         window.cancelAnimationFrame(animationFrame);
       }
     };
-  }, [isSettingsOpen]);
+  }, [isSettingsOpen, isTransparencyOpen]);
 
   const statusText = useMemo(() => {
     if (browserState.isLoading) {
@@ -372,6 +429,40 @@ function BrowserWindow() {
     }
   }
 
+  function toggleTransparencyControls() {
+    setIsTransparencyOpen((isOpen) => {
+      const nextIsOpen = !isOpen;
+      logDebug('transparency:toggle', {
+        isOpen: nextIsOpen,
+        zIndex: getTopLayerZIndex(),
+      });
+      return nextIsOpen;
+    });
+    scheduleBrowserResizeFromTopLayer();
+  }
+
+  async function updateWindowOpacity(opacityPercent: number) {
+    const opacity = opacityPercent / 100;
+    setCommandError(null);
+    logDebug('transparency:opacity-requested', { opacityPercent, opacity });
+    setBrowserState((current) => ({
+      ...current,
+      windowOpacity: opacity,
+    }));
+
+    try {
+      const nextState = await setBrowserWindowOpacity(opacity);
+      logDebug('transparency:opacity-applied', {
+        opacityPercent: Math.round(nextState.windowOpacity * 100),
+        opacity: nextState.windowOpacity,
+      });
+      setBrowserState(nextState);
+    } catch (error) {
+      logDebug('transparency:opacity-failed', { error: getErrorMessage(error) });
+      setCommandError(getErrorMessage(error));
+    }
+  }
+
   function openSettings() {
     setCommandError(null);
     setShortcutDraft(shortcutDraftFromHotkeys(hotkeyState));
@@ -388,9 +479,15 @@ function BrowserWindow() {
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (toolbarRef.current) {
-          void resizeBrowserToTopHeight(
-            Math.ceil(toolbarRef.current.getBoundingClientRect().height),
-          );
+          updateTransparencyControlPosition();
+          const topHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+          logDebug('resize:scheduled-top-layer', {
+            topHeight,
+            isSettingsOpen,
+            isTransparencyOpen,
+          });
+          void sendBrowserDebugLayout('resize:scheduled-top-layer');
+          void resizeBrowserToTopHeight(topHeight);
         }
       });
     });
@@ -425,11 +522,43 @@ function BrowserWindow() {
   async function resizeBrowserToTopHeight(topHeight: number) {
     try {
       const nextState = await resizeBrowser(topHeight);
+      logDebug('resize:scheduled-complete', { topHeight });
       setBrowserState(nextState);
     } catch (error) {
+      logDebug('resize:scheduled-failed', { topHeight, error: getErrorMessage(error) });
       setCommandError(getErrorMessage(error));
     }
   }
+
+  function updateTransparencyControlPosition() {
+    if (!toolbarRef.current || !transparencyButtonRef.current) {
+      return;
+    }
+
+    const topLayerRect = toolbarRef.current.getBoundingClientRect();
+    const buttonRect = transparencyButtonRef.current.getBoundingClientRect();
+    const buttonCenter = buttonRect.left - topLayerRect.left + buttonRect.width / 2;
+    const maxLeft = Math.max(
+      TRANSPARENCY_CONTROL_MARGIN,
+      topLayerRect.width - TRANSPARENCY_CONTROL_WIDTH - TRANSPARENCY_CONTROL_MARGIN,
+    );
+    const nextLeft = Math.round(
+      Math.min(
+        maxLeft,
+        Math.max(TRANSPARENCY_CONTROL_MARGIN, buttonCenter - TRANSPARENCY_CONTROL_WIDTH / 2),
+      ),
+    );
+
+    logDebug('transparency:position', {
+      buttonCenter: Math.round(buttonCenter),
+      topLayerWidth: Math.round(topLayerRect.width),
+      controlLeft: nextLeft,
+      maxLeft: Math.round(maxLeft),
+    });
+    setTransparencyControlLeft(nextLeft);
+  }
+
+  const opacityPercent = Math.round(browserState.windowOpacity * 100);
 
   return (
     <main className="browser-shell" aria-label="ChatGPT browser">
@@ -486,6 +615,23 @@ function BrowserWindow() {
             {browserState.isContentProtected ? <EyeOffIcon /> : <EyeIcon />}
           </button>
 
+          <button
+            id="transparency-button"
+            ref={transparencyButtonRef}
+            className={
+              browserState.windowOpacity < 1
+                ? 'transparency-button adjusted'
+                : 'transparency-button'
+            }
+            type="button"
+            title="Transparency"
+            aria-expanded={isTransparencyOpen}
+            aria-controls="transparency-controls"
+            onClick={toggleTransparencyControls}
+          >
+            <TransparencyIcon />
+          </button>
+
           <label className="address-bar">
             <span className="visually-hidden">URL</span>
             <input
@@ -528,6 +674,29 @@ function BrowserWindow() {
             <span>{statusMessage}</span>
           </div>
         </form>
+
+        {isTransparencyOpen ? (
+          <div className="transparency-popover-row">
+            <label
+              id="transparency-controls"
+              className="transparency-popover-control"
+              style={{ left: `${transparencyControlLeft}px` }}
+              aria-label="Transparency controls"
+            >
+              <span>Opacity</span>
+              <input
+                id="transparency-opacity-range"
+                type="range"
+                min="40"
+                max="100"
+                step="5"
+                value={opacityPercent}
+                onChange={(event) => void updateWindowOpacity(Number(event.currentTarget.value))}
+              />
+              <output>{opacityPercent}%</output>
+            </label>
+          </div>
+        ) : null}
 
         {isSettingsOpen ? (
           <div className="settings-modal-region">
@@ -608,6 +777,15 @@ function EyeOffIcon() {
   );
 }
 
+function TransparencyIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M12 3.5 7 10a6 6 0 1 0 10 0L12 3.5Z" />
+      <path d="M8.8 15.5a4.4 4.4 0 0 0 6.4 0" />
+    </svg>
+  );
+}
+
 function CaptionsIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
@@ -649,4 +827,114 @@ function getErrorMessage(error: unknown) {
   }
 
   return 'The browser command failed.';
+}
+
+function getTopLayerZIndex() {
+  const topLayer = document.querySelector('.browser-top-layer');
+
+  if (!(topLayer instanceof HTMLElement)) {
+    return 'unavailable';
+  }
+
+  return window.getComputedStyle(topLayer).zIndex;
+}
+
+function logElementMetrics(event: string, selector: string) {
+  const element = document.querySelector(selector);
+
+  if (!(element instanceof HTMLElement)) {
+    logDebug(event, { selector, found: false });
+    return;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+
+  logDebug(event, {
+    selector,
+    found: true,
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      top: Math.round(rect.top),
+      bottom: Math.round(rect.bottom),
+    },
+    display: style.display,
+    visibility: style.visibility,
+    opacity: style.opacity,
+    zIndex: style.zIndex,
+    color: style.color,
+    backgroundColor: style.backgroundColor,
+    pointerEvents: style.pointerEvents,
+  });
+}
+
+async function sendBrowserDebugLayout(source: string) {
+  const request = buildBrowserDebugLayoutRequest(source);
+  logDebug('debug-layout:send', {
+    source,
+    topHeight: request.frontend.topHeight,
+    topLayerRect: request.frontend.topLayerRect,
+    transparencyRowRect: request.frontend.transparencyRowRect,
+    transparencyControlRect: request.frontend.transparencyControlRect,
+    transparencyRangeRect: request.frontend.transparencyRangeRect,
+  });
+
+  try {
+    await debugBrowserLayout(request);
+  } catch (error) {
+    logDebug('debug-layout:failed', { source, error: getErrorMessage(error) });
+  }
+}
+
+function buildBrowserDebugLayoutRequest(source: string): BrowserDebugLayoutRequest {
+  const topLayer = document.querySelector('.browser-top-layer');
+  const transparencyControl = document.querySelector('#transparency-controls');
+
+  return {
+    source,
+    frontend: {
+      isTransparencyOpen: Boolean(document.querySelector('#transparency-controls')),
+      topHeight:
+        topLayer instanceof HTMLElement
+          ? Math.ceil(topLayer.getBoundingClientRect().height)
+          : null,
+      topLayerRect: getDebugRect('.browser-top-layer'),
+      transparencyButtonRect: getDebugRect('#transparency-button'),
+      transparencyRowRect: getDebugRect('.transparency-popover-row'),
+      transparencyControlRect: getDebugRect('#transparency-controls'),
+      transparencyRangeRect: getDebugRect('#transparency-opacity-range'),
+      topLayerZIndex:
+        topLayer instanceof HTMLElement ? window.getComputedStyle(topLayer).zIndex : 'unavailable',
+      transparencyControlZIndex:
+        transparencyControl instanceof HTMLElement
+          ? window.getComputedStyle(transparencyControl).zIndex
+          : 'unavailable',
+    },
+  };
+}
+
+function getDebugRect(selector: string): BrowserDebugRect | null {
+  const element = document.querySelector(selector);
+
+  if (!(element instanceof HTMLElement)) {
+    return null;
+  }
+
+  const rect = element.getBoundingClientRect();
+
+  return {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    top: Math.round(rect.top),
+    bottom: Math.round(rect.bottom),
+  };
+}
+
+function logDebug(event: string, details: Record<string, unknown>) {
+  console.info(DEBUG_LOG_PREFIX, event, details);
 }
