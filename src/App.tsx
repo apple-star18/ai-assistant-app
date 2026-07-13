@@ -2,14 +2,12 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   applyHotkeySettings,
-  clearBrowserSession,
   getAutomationState,
   focusBrowser,
   getBrowserState,
   getCaptionState,
   getHotkeyState,
   goBrowserBack,
-  goBrowserForward,
   listenToAutomationState,
   listenToBrowserState,
   listenToCaptionState,
@@ -18,13 +16,9 @@ import {
   openBrowserHome,
   reloadBrowser,
   resizeBrowser,
-  runShortcutMode1,
-  runShortcutMode2,
-  runShortcutMode3,
   setBrowserContentProtected,
   startCaptions,
   stopCaptions,
-  submitAfterUpload,
   submitCaptionsToChatGpt,
 } from './lib/tauri/client';
 import type {
@@ -366,18 +360,6 @@ function BrowserWindow() {
     }
   }
 
-  async function runAutomation(command: () => Promise<AutomationState>) {
-    setCommandError(null);
-
-    try {
-      const nextState = await command();
-      setAutomationState(nextState);
-      await focusBrowser();
-    } catch (error) {
-      setCommandError(getErrorMessage(error));
-    }
-  }
-
   async function toggleContentProtection() {
     const requestedContentProtected = !browserState.isContentProtected;
     setCommandError(null);
@@ -461,15 +443,12 @@ function BrowserWindow() {
           </div>
 
           <div className="navigation-controls" aria-label="Navigation controls">
-            <button type="button" title="Back" onClick={() => void runBrowserCommand(goBrowserBack)}>
-              &#8592;
-            </button>
             <button
               type="button"
-              title="Forward"
-              onClick={() => void runBrowserCommand(goBrowserForward)}
+              title="Back"
+              onClick={() => void runBrowserCommand(goBrowserBack)}
             >
-              &#8594;
+              &#8592;
             </button>
             <button
               type="button"
@@ -487,20 +466,13 @@ function BrowserWindow() {
             </button>
           </div>
 
-          <button
-            className="settings-button"
-            type="button"
-            title="Settings"
-            onClick={openSettings}
-          >
-            Set
+          <button className="settings-button" type="button" title="Settings" onClick={openSettings}>
+            &#9881;
           </button>
 
           <button
             className={
-              browserState.isContentProtected
-                ? 'protection-button protected'
-                : 'protection-button'
+              browserState.isContentProtected ? 'protection-button protected' : 'protection-button'
             }
             type="button"
             title={
@@ -511,7 +483,7 @@ function BrowserWindow() {
             aria-pressed={browserState.isContentProtected}
             onClick={() => void toggleContentProtection()}
           >
-            {browserState.isContentProtected ? 'Protected' : 'Visible'}
+            {browserState.isContentProtected ? <EyeOffIcon /> : <EyeIcon />}
           </button>
 
           <label className="address-bar">
@@ -526,46 +498,24 @@ function BrowserWindow() {
             />
           </label>
 
-          <button className="go-button" type="submit">
-            Go
-          </button>
-
           <button
-            className="danger-button"
+            className="caption-button"
             type="button"
-            title="Clear ChatGPT cookies and browser data"
-            onClick={() => void runBrowserCommand(clearBrowserSession)}
+            title={captionState.isMonitoring ? 'Stop captions' : 'Start captions'}
+            onClick={() => void toggleCaptions()}
           >
-            Clear
-          </button>
-
-          <button className="caption-button" type="button" onClick={() => void toggleCaptions()}>
-            {captionState.isMonitoring ? 'Stop Caption' : 'Start Caption'}
+            <CaptionsIcon />
           </button>
 
           <button
             className="caption-submit-button"
             type="button"
+            title="Send captions"
             disabled={!captionState.pendingCaptionText && !captionState.currentCaptionText}
             onClick={() => void submitCaptions()}
           >
-            Submit Caption
+            <SendIcon />
           </button>
-
-          <div className="automation-controls" aria-label="Automation shortcuts">
-            <button type="button" onClick={() => void runAutomation(runShortcutMode1)}>
-              1
-            </button>
-            <button type="button" onClick={() => void runAutomation(runShortcutMode2)}>
-              2
-            </button>
-            <button type="button" onClick={() => void runAutomation(runShortcutMode3)}>
-              3
-            </button>
-            <button type="button" onClick={() => void runAutomation(submitAfterUpload)}>
-              Enter
-            </button>
-          </div>
 
           <div className="browser-status" role="status">
             <span
@@ -635,6 +585,47 @@ function BrowserWindow() {
         ) : null}
       </div>
     </main>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.75" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M3 3l18 18" />
+      <path d="M8.6 5.5A10.5 10.5 0 0 1 12 5c6 0 9.5 7 9.5 7a18 18 0 0 1-2.4 3.2" />
+      <path d="M15.2 18.1A10.5 10.5 0 0 1 12 18c-6 0-9.5-6-9.5-6a17 17 0 0 1 3.1-3.7" />
+      <path d="M10 10.2a2.75 2.75 0 0 0 3.8 3.8" />
+    </svg>
+  );
+}
+
+function CaptionsIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="2.5" />
+      <path d="M7.5 10.5h3" />
+      <path d="M13.5 10.5h3" />
+      <path d="M7.5 14h4" />
+      <path d="M13.5 14h3" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M4 12 20 4l-5 16-3.2-6.8L4 12Z" />
+      <path d="m11.8 13.2 3.6-3.6" />
+    </svg>
   );
 }
 

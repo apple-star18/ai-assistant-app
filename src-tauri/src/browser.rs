@@ -23,7 +23,7 @@ use crate::screenshot::CaptureMask;
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
-const TOOLBAR_HEIGHT: f64 = 64.0;
+const TOOLBAR_HEIGHT: f64 = 48.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
 const MAX_TOOLBAR_HEIGHT: f64 = 420.0;
 const SCRIPT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
