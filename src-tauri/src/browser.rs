@@ -24,6 +24,7 @@ use crate::screenshot::CaptureMask;
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
+const SETTINGS_OVERLAY_WEBVIEW_LABEL: &str = "settings-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
@@ -154,6 +155,17 @@ pub struct SetTransparencyOverlayRequest {
     opacity_percent: u8,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSettingsOverlayRequest {
+    is_open: bool,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    indicator_left: f64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserCommandError {
@@ -231,6 +243,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         LogicalSize::new(1.0, 1.0),
     )?;
     transparency_overlay.hide()?;
+
+    let settings_overlay = WebviewBuilder::new(
+        SETTINGS_OVERLAY_WEBVIEW_LABEL,
+        WebviewUrl::App("settings-overlay.html".into()),
+    )
+    .accept_first_mouse(true)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .focused(false);
+
+    let settings_overlay = main_window.as_ref().window().add_child(
+        settings_overlay,
+        LogicalPosition::new(0.0, 0.0),
+        LogicalSize::new(1.0, 1.0),
+    )?;
+    settings_overlay.hide()?;
 
     main_window.on_window_event(move |event| match event {
         WindowEvent::Resized(size) => {
@@ -480,6 +508,73 @@ pub fn browser_set_transparency_overlay(
             "window.setOpacityPercent && window.setOpacityPercent({opacity_percent});"
         ))
         .map_err(BrowserCommandError::from_tauri)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn browser_set_settings_overlay(
+    app: AppHandle,
+    request: SetSettingsOverlayRequest,
+) -> CommandResult<()> {
+    let overlay = app
+        .get_webview(SETTINGS_OVERLAY_WEBVIEW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "webview_unavailable",
+            message: "Settings overlay WebView is not available.".to_string(),
+        })?;
+
+    if !request.is_open {
+        log_browser_debug(format_args!("settings_overlay hide"));
+        overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        let _ = app.emit("settings-overlay://closed", ());
+        return Ok(());
+    }
+
+    validate_overlay_rect(
+        request.left,
+        request.top,
+        request.width,
+        request.height,
+        "Settings overlay",
+    )?;
+    if !request.indicator_left.is_finite() {
+        return Err(BrowserCommandError::validation(
+            "Settings overlay indicator position must be a finite number.",
+        ));
+    }
+
+    let indicator_left = request
+        .indicator_left
+        .round()
+        .clamp(14.0, (request.width - 14.0).max(14.0));
+    let position = Position::Logical(LogicalPosition::new(
+        request.left.round(),
+        request.top.round(),
+    ));
+    let size = Size::Logical(LogicalSize::new(
+        request.width.round().max(1.0),
+        request.height.round().max(1.0),
+    ));
+
+    log_browser_debug(format_args!(
+        "settings_overlay show left={} top={} width={} height={} indicator_left={}",
+        request.left, request.top, request.width, request.height, indicator_left
+    ));
+
+    overlay
+        .set_auto_resize(false)
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_bounds(Rect { position, size })
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay.show().map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .eval(format!(
+            "window.setSettingsIndicatorLeft && window.setSettingsIndicatorLeft({indicator_left}); window.refreshSettings && window.refreshSettings();"
+        ))
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay.set_focus().map_err(BrowserCommandError::from_tauri)?;
 
     Ok(())
 }
@@ -924,20 +1019,32 @@ fn validate_window_opacity(opacity: f64) -> CommandResult<f64> {
 }
 
 fn validate_overlay_bounds(request: &SetTransparencyOverlayRequest) -> CommandResult<()> {
-    if !request.left.is_finite()
-        || !request.top.is_finite()
-        || !request.width.is_finite()
-        || !request.height.is_finite()
-    {
-        return Err(BrowserCommandError::validation(
-            "Transparency overlay bounds must be finite numbers.",
-        ));
+    validate_overlay_rect(
+        request.left,
+        request.top,
+        request.width,
+        request.height,
+        "Transparency overlay",
+    )
+}
+
+fn validate_overlay_rect(
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    label: &str,
+) -> CommandResult<()> {
+    if !left.is_finite() || !top.is_finite() || !width.is_finite() || !height.is_finite() {
+        return Err(BrowserCommandError::validation(&format!(
+            "{label} bounds must be finite numbers."
+        )));
     }
 
-    if request.width <= 0.0 || request.height <= 0.0 {
-        return Err(BrowserCommandError::validation(
-            "Transparency overlay size must be positive.",
-        ));
+    if width <= 0.0 || height <= 0.0 {
+        return Err(BrowserCommandError::validation(&format!(
+            "{label} size must be positive."
+        )));
     }
 
     Ok(())

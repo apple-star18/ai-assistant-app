@@ -1,7 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
-  applyHotkeySettings,
   debugBrowserLayout,
   getAutomationState,
   focusBrowser,
@@ -13,10 +12,12 @@ import {
   listenToBrowserState,
   listenToCaptionState,
   listenToHotkeyState,
+  listenToSettingsOverlayClosed,
   navigateBrowser,
   openBrowserHome,
   reloadBrowser,
   resizeBrowser,
+  setBrowserSettingsOverlay,
   setBrowserContentProtected,
   setBrowserTransparencyOverlay,
   startCaptions,
@@ -29,41 +30,8 @@ import type {
   BrowserDebugRect,
   BrowserState,
   CaptionState,
-  HotkeyBindingRequest,
 } from './lib/tauri/contracts';
 import type { HotkeyState } from './lib/tauri/contracts';
-
-type HotkeyAction = HotkeyBindingRequest['action'];
-
-const shortcutFields: Array<{
-  action: HotkeyAction;
-  label: string;
-  defaultAccelerator: string;
-}> = [
-  {
-    action: 'shortcutMode1',
-    label: 'Mode 1',
-    defaultAccelerator: 'Ctrl+Alt+1',
-  },
-  {
-    action: 'shortcutMode2',
-    label: 'Mode 2',
-    defaultAccelerator: 'Ctrl+Alt+2',
-  },
-  {
-    action: 'shortcutMode3',
-    label: 'Mode 3',
-    defaultAccelerator: 'Ctrl+Alt+3',
-  },
-];
-
-const defaultShortcutDraft = shortcutFields.reduce(
-  (draft, field) => {
-    draft[field.action] = field.defaultAccelerator;
-    return draft;
-  },
-  {} as Record<HotkeyAction, string>,
-);
 
 const initialBrowserState: BrowserState = {
   currentUrl: 'https://chatgpt.com/',
@@ -106,6 +74,9 @@ const TRANSPARENCY_CONTROL_WIDTH = 220;
 const TRANSPARENCY_CONTROL_MARGIN = 8;
 const TRANSPARENCY_OVERLAY_TOP = 46;
 const TRANSPARENCY_OVERLAY_HEIGHT = 43;
+const SETTINGS_OVERLAY_WIDTH = 332;
+const SETTINGS_OVERLAY_HEIGHT = 218;
+const SETTINGS_OVERLAY_MARGIN = 8;
 
 export function App() {
   return <BrowserWindow />;
@@ -113,6 +84,7 @@ export function App() {
 
 function BrowserWindow() {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
   const [browserState, setBrowserState] = useState<BrowserState>(initialBrowserState);
   const [captionState, setCaptionState] = useState<CaptionState>(initialCaptionState);
@@ -122,9 +94,9 @@ function BrowserWindow() {
   const [commandError, setCommandError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isTransparencyOpen, setIsTransparencyOpen] = useState(false);
-  const [transparencyControlLeft, setTransparencyControlLeft] = useState(TRANSPARENCY_CONTROL_MARGIN);
-  const [shortcutDraft, setShortcutDraft] =
-    useState<Record<HotkeyAction, string>>(defaultShortcutDraft);
+  const [transparencyControlLeft, setTransparencyControlLeft] = useState(
+    TRANSPARENCY_CONTROL_MARGIN,
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -209,10 +181,16 @@ function BrowserWindow() {
   }, []);
 
   useEffect(() => {
-    if (!isSettingsOpen) {
-      setShortcutDraft(shortcutDraftFromHotkeys(hotkeyState));
-    }
-  }, [hotkeyState, isSettingsOpen]);
+    const unlisten = listenToSettingsOverlayClosed(() => {
+      setIsSettingsOpen(false);
+    });
+
+    return () => {
+      void unlisten.then((dispose) => {
+        dispose();
+      });
+    };
+  }, []);
 
   const getReservedTopHeight = useCallback(() => {
     if (!toolbarRef.current) {
@@ -258,6 +236,30 @@ function BrowserWindow() {
   }, [isTransparencyOpen]);
 
   useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+
+    const repositionSettings = () => {
+      void showSettingsOverlay();
+    };
+
+    repositionSettings();
+    const firstFrame = window.requestAnimationFrame(repositionSettings);
+    const settleTimer = window.setTimeout(repositionSettings, 150);
+
+    window.addEventListener('resize', repositionSettings);
+    window.visualViewport?.addEventListener('resize', repositionSettings);
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('resize', repositionSettings);
+      window.visualViewport?.removeEventListener('resize', repositionSettings);
+    };
+  }, [isSettingsOpen]);
+
+  useEffect(() => {
     let animationFrame: number | null = null;
     const settleTimers: number[] = [];
     let isDisposed = false;
@@ -277,7 +279,6 @@ function BrowserWindow() {
         const toolbarHeight = getReservedTopHeight();
         logDebug('resize:measured-top-layer', {
           toolbarHeight,
-          isSettingsOpen,
         });
 
         void resizeBrowser(toolbarHeight)
@@ -343,7 +344,7 @@ function BrowserWindow() {
         window.cancelAnimationFrame(animationFrame);
       }
     };
-  }, [getReservedTopHeight, isSettingsOpen]);
+  }, [getReservedTopHeight]);
 
   useEffect(() => {
     const opacityPercent = Math.round(browserState.windowOpacity * 100);
@@ -474,67 +475,60 @@ function BrowserWindow() {
 
   function openSettings() {
     setCommandError(null);
-    setShortcutDraft(shortcutDraftFromHotkeys(hotkeyState));
     setIsSettingsOpen(true);
-    scheduleBrowserResizeFromTopLayer();
+    void showSettingsOverlay();
   }
 
   function closeSettings() {
     setIsSettingsOpen(false);
-    scheduleBrowserResizeFromTopLayer();
-  }
-
-  function scheduleBrowserResizeFromTopLayer() {
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        if (toolbarRef.current) {
-          updateTransparencyControlPosition();
-          const topHeight = getReservedTopHeight();
-          logDebug('resize:scheduled-top-layer', {
-            topHeight,
-            isSettingsOpen,
-            isTransparencyOpen,
-          });
-          void sendBrowserDebugLayout('resize:scheduled-top-layer', isTransparencyOpen);
-          void resizeBrowserToTopHeight(topHeight);
-        }
-      });
+    void setBrowserSettingsOverlay({
+      isOpen: false,
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 1,
+      indicatorLeft: 14,
+    }).catch((error: unknown) => {
+      logDebug('settings:overlay-hide-failed', { error: getErrorMessage(error) });
+      setCommandError(getErrorMessage(error));
     });
   }
 
-  function updateShortcutDraft(action: HotkeyAction, accelerator: string) {
-    setShortcutDraft((current) => ({
-      ...current,
-      [action]: accelerator,
-    }));
-  }
-
-  async function applyShortcutSettings(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setCommandError(null);
-
-    try {
-      const nextState = await applyHotkeySettings(
-        shortcutFields.map((field) => ({
-          action: field.action,
-          accelerator: shortcutDraft[field.action].trim(),
-        })),
-      );
-
-      setHotkeyState(nextState);
-      closeSettings();
-    } catch (error) {
-      setCommandError(getErrorMessage(error));
+  async function showSettingsOverlay() {
+    if (!toolbarRef.current || !settingsButtonRef.current) {
+      return;
     }
-  }
 
-  async function resizeBrowserToTopHeight(topHeight: number) {
+    const topLayerRect = toolbarRef.current.getBoundingClientRect();
+    const buttonRect = settingsButtonRef.current.getBoundingClientRect();
+    const width = Math.max(
+      260,
+      Math.min(SETTINGS_OVERLAY_WIDTH, topLayerRect.width - SETTINGS_OVERLAY_MARGIN * 2),
+    );
+    const height = SETTINGS_OVERLAY_HEIGHT;
+    const buttonCenter = buttonRect.left - topLayerRect.left + buttonRect.width / 2;
+    const maxLeft = Math.max(
+      SETTINGS_OVERLAY_MARGIN,
+      topLayerRect.width - width - SETTINGS_OVERLAY_MARGIN,
+    );
+    const left = Math.round(
+      Math.min(maxLeft, Math.max(SETTINGS_OVERLAY_MARGIN, buttonCenter - width / 2)),
+    );
+    const top = Math.round(topLayerRect.height + SETTINGS_OVERLAY_MARGIN);
+    const indicatorLeft = Math.round(buttonCenter - left);
+
     try {
-      const nextState = await resizeBrowser(topHeight);
-      logDebug('resize:scheduled-complete', { topHeight });
-      setBrowserState(nextState);
+      await setBrowserSettingsOverlay({
+        isOpen: true,
+        left,
+        top,
+        width,
+        height,
+        indicatorLeft,
+      });
+      logDebug('settings:overlay-show', { left, top, width, height, indicatorLeft });
     } catch (error) {
-      logDebug('resize:scheduled-failed', { topHeight, error: getErrorMessage(error) });
+      logDebug('settings:overlay-show-failed', { error: getErrorMessage(error) });
       setCommandError(getErrorMessage(error));
     }
   }
@@ -602,7 +596,14 @@ function BrowserWindow() {
             </button>
           </div>
 
-          <button className="settings-button" type="button" title="Settings" onClick={openSettings}>
+          <button
+            ref={settingsButtonRef}
+            className={isSettingsOpen ? 'settings-button active' : 'settings-button'}
+            type="button"
+            title="Settings"
+            aria-expanded={isSettingsOpen}
+            onClick={isSettingsOpen ? closeSettings : openSettings}
+          >
             &#9881;
           </button>
 
@@ -680,61 +681,6 @@ function BrowserWindow() {
             <span>{statusMessage}</span>
           </div>
         </form>
-
-        {isSettingsOpen ? (
-          <div className="settings-modal-region">
-            <form
-              className="settings-dialog in-window"
-              aria-modal="true"
-              aria-labelledby="settings-title"
-              role="dialog"
-              onSubmit={(event) => void applyShortcutSettings(event)}
-            >
-              <div className="settings-dialog-header">
-                <h2 id="settings-title">Settings</h2>
-                <button type="button" title="Close settings" onClick={closeSettings}>
-                  X
-                </button>
-              </div>
-
-              <div className="shortcut-settings">
-                {shortcutFields.map((field) => {
-                  const binding = hotkeyState.bindings.find(
-                    (candidate) => candidate.action === field.action,
-                  );
-
-                  return (
-                    <label className="shortcut-field" key={field.action}>
-                      <span>{field.label}</span>
-                      <input
-                        value={shortcutDraft[field.action]}
-                        spellCheck={false}
-                        autoCapitalize="none"
-                        onChange={(event) =>
-                          updateShortcutDraft(field.action, event.currentTarget.value)
-                        }
-                      />
-                      <span
-                        className={binding?.error ? 'shortcut-status error' : 'shortcut-status'}
-                      >
-                        {binding?.error ?? (binding?.registered ? 'Registered' : 'Not registered')}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-
-              <div className="settings-actions">
-                <button type="button" onClick={closeSettings}>
-                  Cancel
-                </button>
-                <button className="settings-apply-button" type="submit">
-                  Apply
-                </button>
-              </div>
-            </form>
-          </div>
-        ) : null}
       </div>
     </main>
   );
@@ -788,16 +734,6 @@ function SendIcon() {
       <path d="m11.8 13.2 3.6-3.6" />
     </svg>
   );
-}
-
-function shortcutDraftFromHotkeys(hotkeyState: HotkeyState): Record<HotkeyAction, string> {
-  const draft = { ...defaultShortcutDraft };
-
-  for (const binding of hotkeyState.bindings) {
-    draft[binding.action] = binding.accelerator;
-  }
-
-  return draft;
 }
 
 function getErrorMessage(error: unknown) {
@@ -883,9 +819,7 @@ function buildBrowserDebugLayoutRequest(
     frontend: {
       isTransparencyOpen,
       topHeight:
-        topLayer instanceof HTMLElement
-          ? Math.ceil(topLayer.getBoundingClientRect().height)
-          : null,
+        topLayer instanceof HTMLElement ? Math.ceil(topLayer.getBoundingClientRect().height) : null,
       topLayerRect: getDebugRect('.browser-top-layer'),
       transparencyButtonRect: getDebugRect('#transparency-button'),
       transparencyRowRect: null,

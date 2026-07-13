@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        color: #d8dee8;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        font-size: 12px;
+        padding-top: 7px;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      .panel {
+        --indicator-left: 50%;
+        --panel-border-color: rgba(123, 139, 163, 0.42);
+        --panel-background-color: rgba(11, 15, 22, 0.68);
+        position: relative;
+        display: grid;
+        width: 100%;
+        height: calc(100% - 7px);
+        grid-template-rows: auto 1fr auto;
+        gap: 7px;
+        border: 1px solid var(--panel-border-color);
+        border-radius: 8px;
+        background: var(--panel-background-color);
+        box-shadow:
+          inset 3px 0 0 rgba(53, 196, 137, 0.34),
+          0 18px 44px rgba(0, 0, 0, 0.34);
+        padding: 9px 10px 9px 12px;
+        backdrop-filter: blur(18px) saturate(1.15);
+      }
+
+      .panel::before {
+        position: absolute;
+        top: -5px;
+        left: var(--indicator-left);
+        width: 9px;
+        height: 9px;
+        border-top: 1px solid var(--panel-border-color);
+        border-left: 1px solid var(--panel-border-color);
+        background: rgba(11, 15, 22, 0.86);
+        content: '';
+        transform: translateX(-50%) rotate(45deg);
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      h1 {
+        margin: 0;
+        color: #f4f6f8;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+
+      .fields {
+        display: grid;
+        align-content: start;
+        gap: 6px;
+      }
+
+      .field {
+        display: grid;
+        grid-template-columns: 54px minmax(0, 1fr);
+        gap: 3px 8px;
+        align-items: center;
+      }
+
+      .field-label {
+        color: #cbd5e1;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      input {
+        width: 100%;
+        height: 28px;
+        border: 1px solid rgba(123, 139, 163, 0.32);
+        border-radius: 6px;
+        background: rgba(8, 12, 18, 0.5);
+        color: #f4f6f8;
+        font-size: 11px;
+        line-height: 28px;
+        padding: 0 9px;
+      }
+
+      input:focus-visible {
+        outline: 2px solid #1677c7;
+        outline-offset: 1px;
+      }
+
+      .status {
+        grid-column: 2;
+        min-width: 0;
+        overflow: hidden;
+        color: #aab4c2;
+        font-size: 10px;
+        line-height: 1.2;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .status.error,
+      .message.error {
+        color: #f2a7b3;
+      }
+
+      .message {
+        min-width: 0;
+        overflow: hidden;
+        color: #9aa4b2;
+        font-size: 10px;
+        line-height: 1.2;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .icon-button {
+        display: inline-grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border: 1px solid rgba(123, 139, 163, 0.34);
+        border-radius: 6px;
+        background: rgba(18, 24, 34, 0.58);
+        color: #eef2f6;
+        line-height: 1;
+        padding: 0;
+      }
+
+      .icon-button:hover {
+        background: rgba(32, 38, 50, 0.76);
+      }
+
+      .icon-button.primary {
+        border-color: rgba(68, 156, 124, 0.72);
+        color: #dff8ef;
+      }
+
+      .icon-button.primary:hover {
+        background: rgba(24, 49, 38, 0.8);
+      }
+
+      .icon-button svg {
+        width: 15px;
+        height: 15px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2.25;
+      }
+    </style>
+  </head>
+  <body>
+    <form class="panel" id="settings-form" aria-labelledby="settings-title">
+      <div class="header">
+        <h1 id="settings-title">Settings</h1>
+        <button
+          class="icon-button primary"
+          type="submit"
+          title="Apply settings"
+          aria-label="Apply settings"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="fields" id="fields"></div>
+
+      <div class="message" id="message" role="status"></div>
+    </form>
+    <script src="/settings-overlay.js"></script>
+  </body>
+</html>

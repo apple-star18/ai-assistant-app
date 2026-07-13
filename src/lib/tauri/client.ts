@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 
 import type {
   AutomationState,
+  BrowserSettingsOverlayRequest,
   BrowserState,
   BrowserTransparencyOverlayRequest,
   CaptionState,
@@ -82,6 +83,12 @@ export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverla
   });
 }
 
+export function setBrowserSettingsOverlay(request: BrowserSettingsOverlayRequest) {
+  return invokeCommand('browser_set_settings_overlay', {
+    request,
+  });
+}
+
 export function getCaptionState() {
   return invokeCommand('captions_get_state');
 }
@@ -147,6 +154,12 @@ export function listenToAutomationState(onState: (state: AutomationState) => voi
 export function listenToHotkeyState(onState: (state: HotkeyState) => void) {
   return listen<HotkeyState>('hotkeys://state', (event) => {
     onState(event.payload);
+  });
+}
+
+export function listenToSettingsOverlayClosed(onClose: () => void) {
+  return listen('settings-overlay://closed', () => {
+    onClose();
   });
 }
 
