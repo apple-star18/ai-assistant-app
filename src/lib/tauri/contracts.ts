@@ -22,30 +22,6 @@ export interface BrowserState {
   lastError: string | null;
 }
 
-export interface BrowserDebugRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  top: number;
-  bottom: number;
-}
-
-export interface BrowserDebugLayoutRequest {
-  source: string;
-  frontend: {
-    isTransparencyOpen: boolean;
-    topHeight: number | null;
-    topLayerRect: BrowserDebugRect | null;
-    transparencyButtonRect: BrowserDebugRect | null;
-    transparencyRowRect: BrowserDebugRect | null;
-    transparencyControlRect: BrowserDebugRect | null;
-    transparencyRangeRect: BrowserDebugRect | null;
-    topLayerZIndex: string;
-    transparencyControlZIndex: string;
-  };
-}
-
 export interface BrowserTransparencyOverlayRequest {
   isOpen: boolean;
   left: number;
@@ -153,12 +129,6 @@ export interface CommandMap {
       };
     };
     response: BrowserState;
-  };
-  browser_debug_layout: {
-    args: {
-      request: BrowserDebugLayoutRequest;
-    };
-    response: undefined;
   };
   browser_set_content_protected: {
     args: {

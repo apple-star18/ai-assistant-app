@@ -5,17 +5,17 @@ const messageElement = document.querySelector('#message');
 const shortcutFields = [
   {
     action: 'shortcutMode1',
-    label: 'Mode 1',
+    label: 'Caption Submit',
     defaultAccelerator: 'Ctrl+Alt+1',
   },
   {
     action: 'shortcutMode2',
-    label: 'Mode 2',
+    label: 'Capture + Caption',
     defaultAccelerator: 'Ctrl+Alt+2',
   },
   {
     action: 'shortcutMode3',
-    label: 'Mode 3',
+    label: 'Capture Only',
     defaultAccelerator: 'Ctrl+Alt+3',
   },
 ];
@@ -64,9 +64,27 @@ function renderFields() {
 
       const input = document.createElement('input');
       input.name = field.action;
+      input.dataset.action = field.action;
       input.value = acceleratorFor(field);
+      input.readOnly = true;
       input.spellcheck = false;
       input.autocapitalize = 'none';
+      input.placeholder = 'Press shortcut';
+      input.addEventListener('focus', () => {
+        input.classList.add('recording');
+        input.classList.remove('invalid');
+        setMessage('Press a shortcut with Ctrl, Alt, Shift, or Win.');
+      });
+      input.addEventListener('blur', () => {
+        input.classList.remove('recording');
+        if (!hasDuplicateShortcuts()) {
+          input.classList.remove('invalid');
+          setMessage('');
+        }
+      });
+      input.addEventListener('keydown', (event) => {
+        recordShortcut(event, input);
+      });
 
       const statusText = document.createElement('span');
       statusText.className = status.isError ? 'status error' : 'status';
@@ -76,6 +94,158 @@ function renderFields() {
       return label;
     }),
   );
+}
+
+function recordShortcut(event, input) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (
+    event.key === 'Escape' &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !event.metaKey
+  ) {
+    input.blur();
+    return;
+  }
+
+  const key = keyFromEvent(event);
+
+  if (!key) {
+    return;
+  }
+
+  const modifiers = [];
+
+  if (event.ctrlKey) {
+    modifiers.push('Ctrl');
+  }
+
+  if (event.altKey) {
+    modifiers.push('Alt');
+  }
+
+  if (event.shiftKey) {
+    modifiers.push('Shift');
+  }
+
+  if (event.metaKey) {
+    modifiers.push('Win');
+  }
+
+  if (modifiers.length === 0) {
+    setMessage('Shortcut needs Ctrl, Alt, Shift, or Win.', true);
+    return;
+  }
+
+  const accelerator = [...modifiers, key].join('+');
+  input.value = accelerator;
+  const duplicate = findDuplicateShortcut(accelerator, input.dataset.action);
+
+  if (duplicate) {
+    input.classList.add('invalid');
+    setMessage(`Shortcut already used by ${duplicate.label}.`, true);
+    return;
+  }
+
+  input.classList.remove('invalid');
+  setMessage('Shortcut captured.');
+}
+
+function findDuplicateShortcut(accelerator, currentAction) {
+  const normalizedAccelerator = normalizeAccelerator(accelerator);
+
+  return shortcutFields.find((field) => {
+    if (field.action === currentAction) {
+      return false;
+    }
+
+    const input = formElement.elements.namedItem(field.action);
+
+    if (!(input instanceof HTMLInputElement)) {
+      return false;
+    }
+
+    return normalizeAccelerator(input.value) === normalizedAccelerator;
+  });
+}
+
+function hasDuplicateShortcuts() {
+  const seen = new Map();
+  let hasDuplicate = false;
+
+  for (const field of shortcutFields) {
+    const input = formElement.elements.namedItem(field.action);
+
+    if (!(input instanceof HTMLInputElement)) {
+      continue;
+    }
+
+    input.classList.remove('invalid');
+    const accelerator = normalizeAccelerator(input.value);
+
+    if (!accelerator) {
+      continue;
+    }
+
+    const existing = seen.get(accelerator);
+
+    if (existing) {
+      input.classList.add('invalid');
+      existing.input.classList.add('invalid');
+      setMessage(`Shortcut already used by ${existing.field.label} and ${field.label}.`, true);
+      hasDuplicate = true;
+    } else {
+      seen.set(accelerator, { field, input });
+    }
+  }
+
+  return hasDuplicate;
+}
+
+function normalizeAccelerator(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+function keyFromEvent(event) {
+  if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) {
+    return null;
+  }
+
+  if (/^Key[A-Z]$/.test(event.code)) {
+    return event.code.slice(3);
+  }
+
+  if (/^Digit[0-9]$/.test(event.code)) {
+    return event.code.slice(5);
+  }
+
+  if (/^Numpad[0-9]$/.test(event.code)) {
+    return event.code.slice(6);
+  }
+
+  if (/^F([1-9]|1[0-2])$/.test(event.key)) {
+    return event.key;
+  }
+
+  switch (event.key) {
+    case 'Enter':
+      return 'Enter';
+    case ' ':
+    case 'Spacebar':
+      return 'Space';
+    case 'Tab':
+      return 'Tab';
+    case 'Esc':
+    case 'Escape':
+      return 'Esc';
+    default:
+      return null;
+  }
 }
 
 function setMessage(text, isError = false) {
@@ -109,6 +279,10 @@ async function closeSettings() {
 async function applySettings(event) {
   event.preventDefault();
   setMessage('');
+
+  if (hasDuplicateShortcuts()) {
+    return;
+  }
 
   const formData = new FormData(formElement);
   const bindings = shortcutFields.map((field) => ({

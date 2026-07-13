@@ -8,7 +8,6 @@ import type {
   BrowserTransparencyOverlayRequest,
   CaptionState,
   CommandMap,
-  BrowserDebugLayoutRequest,
   HotkeyBindingRequest,
   HotkeyState,
 } from './contracts';
@@ -56,12 +55,6 @@ export function clearBrowserSession() {
 export function resizeBrowser(toolbarHeight: number) {
   return invokeCommand('browser_resize', {
     request: { toolbarHeight },
-  });
-}
-
-export function debugBrowserLayout(request: BrowserDebugLayoutRequest) {
-  return invokeCommand('browser_debug_layout', {
-    request,
   });
 }
 

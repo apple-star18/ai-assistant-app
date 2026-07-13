@@ -1,7 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
-  debugBrowserLayout,
   getAutomationState,
   focusBrowser,
   getBrowserState,
@@ -24,13 +23,7 @@ import {
   stopCaptions,
   submitCaptionsToChatGpt,
 } from './lib/tauri/client';
-import type {
-  AutomationState,
-  BrowserDebugLayoutRequest,
-  BrowserDebugRect,
-  BrowserState,
-  CaptionState,
-} from './lib/tauri/contracts';
+import type { AutomationState, BrowserState, CaptionState } from './lib/tauri/contracts';
 import type { HotkeyState } from './lib/tauri/contracts';
 
 const initialBrowserState: BrowserState = {
@@ -69,7 +62,6 @@ const initialHotkeyState: HotkeyState = {
   lastError: null,
 };
 
-const DEBUG_LOG_PREFIX = '[ai-assistant-browser]';
 const TRANSPARENCY_CONTROL_WIDTH = 220;
 const TRANSPARENCY_CONTROL_MARGIN = 8;
 const TRANSPARENCY_OVERLAY_TOP = 46;
@@ -199,10 +191,6 @@ function BrowserWindow() {
 
     const reservedTopHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
 
-    logDebug('resize:reserved-top-height', {
-      reservedTopHeight,
-    });
-
     return reservedTopHeight;
   }, []);
 
@@ -213,9 +201,6 @@ function BrowserWindow() {
 
     const logTransparencyMetrics = () => {
       updateTransparencyControlPosition();
-      logElementMetrics('transparency:top-layer-metrics', '.browser-top-layer');
-      logElementMetrics('transparency:button-metrics', '#transparency-button');
-      void sendBrowserDebugLayout('transparency:metrics', true);
     };
 
     logTransparencyMetrics();
@@ -277,26 +262,15 @@ function BrowserWindow() {
         }
 
         const toolbarHeight = getReservedTopHeight();
-        logDebug('resize:measured-top-layer', {
-          toolbarHeight,
-        });
 
         void resizeBrowser(toolbarHeight)
           .then((state) => {
             if (!isDisposed) {
-              logDebug('resize:complete', {
-                toolbarHeight,
-                windowOpacity: state.windowOpacity,
-              });
               setBrowserState(state);
             }
           })
           .catch((error: unknown) => {
             if (!isDisposed) {
-              logDebug('resize:failed', {
-                toolbarHeight,
-                error: getErrorMessage(error),
-              });
               setCommandError(getErrorMessage(error));
             }
           });
@@ -357,7 +331,6 @@ function BrowserWindow() {
       height: TRANSPARENCY_OVERLAY_HEIGHT,
       opacityPercent,
     }).catch((error: unknown) => {
-      logDebug('transparency:overlay-failed', { error: getErrorMessage(error) });
       setCommandError(getErrorMessage(error));
     });
   }, [browserState.windowOpacity, isTransparencyOpen, transparencyControlLeft]);
@@ -465,11 +438,6 @@ function BrowserWindow() {
       updateTransparencyControlPosition();
     }
 
-    logDebug('transparency:toggle', {
-      isOpen: nextIsOpen,
-      zIndex: getTopLayerZIndex(),
-    });
-
     setIsTransparencyOpen(nextIsOpen);
   }
 
@@ -489,7 +457,6 @@ function BrowserWindow() {
       height: 1,
       indicatorLeft: 14,
     }).catch((error: unknown) => {
-      logDebug('settings:overlay-hide-failed', { error: getErrorMessage(error) });
       setCommandError(getErrorMessage(error));
     });
   }
@@ -526,9 +493,7 @@ function BrowserWindow() {
         height,
         indicatorLeft,
       });
-      logDebug('settings:overlay-show', { left, top, width, height, indicatorLeft });
     } catch (error) {
-      logDebug('settings:overlay-show-failed', { error: getErrorMessage(error) });
       setCommandError(getErrorMessage(error));
     }
   }
@@ -552,12 +517,6 @@ function BrowserWindow() {
       ),
     );
 
-    logDebug('transparency:position', {
-      buttonCenter: Math.round(buttonCenter),
-      topLayerWidth: Math.round(topLayerRect.width),
-      controlLeft: nextLeft,
-      maxLeft: Math.round(maxLeft),
-    });
     setTransparencyControlLeft(nextLeft);
   }
 
@@ -746,111 +705,4 @@ function getErrorMessage(error: unknown) {
   }
 
   return 'The browser command failed.';
-}
-
-function getTopLayerZIndex() {
-  const topLayer = document.querySelector('.browser-top-layer');
-
-  if (!(topLayer instanceof HTMLElement)) {
-    return 'unavailable';
-  }
-
-  return window.getComputedStyle(topLayer).zIndex;
-}
-
-function logElementMetrics(event: string, selector: string) {
-  const element = document.querySelector(selector);
-
-  if (!(element instanceof HTMLElement)) {
-    logDebug(event, { selector, found: false });
-    return;
-  }
-
-  const rect = element.getBoundingClientRect();
-  const style = window.getComputedStyle(element);
-
-  logDebug(event, {
-    selector,
-    found: true,
-    rect: {
-      x: Math.round(rect.x),
-      y: Math.round(rect.y),
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
-      top: Math.round(rect.top),
-      bottom: Math.round(rect.bottom),
-    },
-    display: style.display,
-    visibility: style.visibility,
-    opacity: style.opacity,
-    zIndex: style.zIndex,
-    color: style.color,
-    backgroundColor: style.backgroundColor,
-    pointerEvents: style.pointerEvents,
-  });
-}
-
-async function sendBrowserDebugLayout(source: string, isTransparencyOpen = false) {
-  const request = buildBrowserDebugLayoutRequest(source, isTransparencyOpen);
-  logDebug('debug-layout:send', {
-    source,
-    topHeight: request.frontend.topHeight,
-    topLayerRect: request.frontend.topLayerRect,
-    transparencyRowRect: request.frontend.transparencyRowRect,
-    transparencyControlRect: request.frontend.transparencyControlRect,
-    transparencyRangeRect: request.frontend.transparencyRangeRect,
-  });
-
-  try {
-    await debugBrowserLayout(request);
-  } catch (error) {
-    logDebug('debug-layout:failed', { source, error: getErrorMessage(error) });
-  }
-}
-
-function buildBrowserDebugLayoutRequest(
-  source: string,
-  isTransparencyOpen: boolean,
-): BrowserDebugLayoutRequest {
-  const topLayer = document.querySelector('.browser-top-layer');
-
-  return {
-    source,
-    frontend: {
-      isTransparencyOpen,
-      topHeight:
-        topLayer instanceof HTMLElement ? Math.ceil(topLayer.getBoundingClientRect().height) : null,
-      topLayerRect: getDebugRect('.browser-top-layer'),
-      transparencyButtonRect: getDebugRect('#transparency-button'),
-      transparencyRowRect: null,
-      transparencyControlRect: getDebugRect('#transparency-controls'),
-      transparencyRangeRect: getDebugRect('#transparency-opacity-range'),
-      topLayerZIndex:
-        topLayer instanceof HTMLElement ? window.getComputedStyle(topLayer).zIndex : 'unavailable',
-      transparencyControlZIndex: 'native-overlay',
-    },
-  };
-}
-
-function getDebugRect(selector: string): BrowserDebugRect | null {
-  const element = document.querySelector(selector);
-
-  if (!(element instanceof HTMLElement)) {
-    return null;
-  }
-
-  const rect = element.getBoundingClientRect();
-
-  return {
-    x: Math.round(rect.x),
-    y: Math.round(rect.y),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-    top: Math.round(rect.top),
-    bottom: Math.round(rect.bottom),
-  };
-}
-
-function logDebug(event: string, details: Record<string, unknown>) {
-  console.info(DEBUG_LOG_PREFIX, event, details);
 }

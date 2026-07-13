@@ -29,7 +29,6 @@ pub fn run() {
             browser::browser_focus,
             browser::browser_clear_session,
             browser::browser_resize,
-            browser::browser_debug_layout,
             browser::browser_set_content_protected,
             browser::browser_set_settings_overlay,
             browser::browser_set_transparency_overlay,

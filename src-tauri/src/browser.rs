@@ -100,38 +100,6 @@ pub struct ResizeRequest {
     toolbar_height: f64,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DebugLayoutRequest {
-    source: String,
-    frontend: FrontendDebugLayout,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FrontendDebugLayout {
-    is_transparency_open: bool,
-    top_height: Option<f64>,
-    top_layer_rect: Option<FrontendDebugRect>,
-    transparency_button_rect: Option<FrontendDebugRect>,
-    transparency_row_rect: Option<FrontendDebugRect>,
-    transparency_control_rect: Option<FrontendDebugRect>,
-    transparency_range_rect: Option<FrontendDebugRect>,
-    top_layer_z_index: String,
-    transparency_control_z_index: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FrontendDebugRect {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-    top: f64,
-    bottom: f64,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetContentProtectionRequest {
@@ -366,9 +334,6 @@ pub fn browser_resize(
     request: ResizeRequest,
 ) -> CommandResult<BrowserSnapshot> {
     let toolbar_height = validate_toolbar_height(request.toolbar_height)?;
-    log_browser_debug(format_args!(
-        "browser_resize requested toolbar_height={toolbar_height}"
-    ));
     {
         let mut layout = state.layout()?;
         layout.toolbar_height = toolbar_height;
@@ -376,36 +341,6 @@ pub fn browser_resize(
 
     resize_browser_to_window(&app);
     Ok(state.snapshot()?.clone())
-}
-
-#[tauri::command]
-pub fn browser_debug_layout(
-    app: AppHandle,
-    state: State<'_, BrowserStore>,
-    request: DebugLayoutRequest,
-) -> CommandResult<()> {
-    let frontend = &request.frontend;
-    log_browser_debug(format_args!(
-        "browser_debug_layout source={} frontend is_transparency_open={} top_height={:?} top_layer_z_index={} transparency_control_z_index={} top_layer={} button={} row={} control={} range={}",
-        request.source,
-        frontend.is_transparency_open,
-        frontend.top_height,
-        frontend.top_layer_z_index,
-        frontend.transparency_control_z_index,
-        format_frontend_rect(frontend.top_layer_rect.as_ref()),
-        format_frontend_rect(frontend.transparency_button_rect.as_ref()),
-        format_frontend_rect(frontend.transparency_row_rect.as_ref()),
-        format_frontend_rect(frontend.transparency_control_rect.as_ref()),
-        format_frontend_rect(frontend.transparency_range_rect.as_ref())
-    ));
-
-    let toolbar_height = state.layout()?.toolbar_height;
-    log_browser_debug(format_args!(
-        "browser_debug_layout stored_toolbar_height={toolbar_height}"
-    ));
-    log_native_browser_layout(&app, toolbar_height, &request.source);
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -475,7 +410,6 @@ pub fn browser_set_transparency_overlay(
         })?;
 
     if !request.is_open {
-        log_browser_debug(format_args!("transparency_overlay hide"));
         overlay.hide().map_err(BrowserCommandError::from_tauri)?;
         return Ok(());
     }
@@ -489,11 +423,6 @@ pub fn browser_set_transparency_overlay(
     let size = Size::Logical(LogicalSize::new(
         request.width.round().max(1.0),
         request.height.round().max(1.0),
-    ));
-
-    log_browser_debug(format_args!(
-        "transparency_overlay show left={} top={} width={} height={} opacity_percent={}",
-        request.left, request.top, request.width, request.height, opacity_percent
     ));
 
     overlay
@@ -525,7 +454,6 @@ pub fn browser_set_settings_overlay(
         })?;
 
     if !request.is_open {
-        log_browser_debug(format_args!("settings_overlay hide"));
         overlay.hide().map_err(BrowserCommandError::from_tauri)?;
         let _ = app.emit("settings-overlay://closed", ());
         return Ok(());
@@ -555,11 +483,6 @@ pub fn browser_set_settings_overlay(
     let size = Size::Logical(LogicalSize::new(
         request.width.round().max(1.0),
         request.height.round().max(1.0),
-    ));
-
-    log_browser_debug(format_args!(
-        "settings_overlay show left={} top={} width={} height={} indicator_left={}",
-        request.left, request.top, request.width, request.height, indicator_left
     ));
 
     overlay
@@ -619,9 +542,6 @@ fn apply_window_opacity(window: &Window, opacity: f64) -> CommandResult<()> {
     }
 
     let alpha = (opacity * u8::MAX as f64).round() as u8;
-    log_browser_debug(format_args!(
-        "apply_window_opacity opacity={opacity} alpha={alpha} current_style={current_style} layered_style={layered_style}"
-    ));
     unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA) }.map_err(|error| {
         BrowserCommandError {
             code: "native_error",
@@ -809,9 +729,6 @@ fn resize_browser_to_window(app: &AppHandle) {
 
 fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize) {
     let Some(main_window) = app.get_window(MAIN_WINDOW_LABEL) else {
-        log_browser_debug(format_args!(
-            "resize_browser_to_window_size main_window=unavailable"
-        ));
         return;
     };
 
@@ -825,9 +742,6 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
         .lock()
         .map(|layout| layout.toolbar_height)
         .unwrap_or(TOOLBAR_HEIGHT);
-    log_browser_debug(format_args!(
-        "resize_browser_to_window_size toolbar_height={toolbar_height} window_size={window_size:?}"
-    ));
     let bounds = match browser_fit_bounds(&main_window, toolbar_height, window_size) {
         Ok(bounds) => bounds,
         Err(error) => {
@@ -839,104 +753,20 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
     };
 
     if let Err(error) = browser.set_auto_resize(false) {
-        log_browser_debug(format_args!(
-            "browser.set_auto_resize(false) failed error={error}"
-        ));
         update_snapshot(app, |snapshot| {
             snapshot.last_error = Some(format!("Failed to disable browser auto-resize: {error}"));
         });
         return;
     }
 
-    log_browser_debug(format_args!("browser.set_auto_resize(false) complete"));
-
     if let Err(error) = browser.set_bounds(Rect {
         position: bounds.position,
         size: bounds.size,
     }) {
-        log_browser_debug(format_args!("browser.set_bounds failed error={error}"));
         update_snapshot(app, |snapshot| {
             snapshot.last_error = Some(format!("Failed to set browser WebView bounds: {error}"));
         });
         return;
-    }
-
-    log_browser_debug(format_args!(
-        "browser.set_bounds position={:?} size={:?}",
-        bounds.position, bounds.size
-    ));
-
-    match browser.bounds() {
-        Ok(actual_bounds) => {
-            log_browser_debug(format_args!(
-                "browser.bounds actual position={:?} size={:?}",
-                actual_bounds.position, actual_bounds.size
-            ));
-        }
-        Err(error) => {
-            log_browser_debug(format_args!("browser.bounds readback failed error={error}"));
-        }
-    }
-}
-
-fn log_native_browser_layout(app: &AppHandle, toolbar_height: f64, source: &str) {
-    let Some(main_window) = app.get_window(MAIN_WINDOW_LABEL) else {
-        log_browser_debug(format_args!(
-            "browser_debug_layout source={source} main_window=unavailable"
-        ));
-        return;
-    };
-
-    let scale_factor = main_window.scale_factor().ok();
-    let inner_size = main_window.inner_size().ok();
-    let inner_position = main_window.inner_position().ok();
-    log_browser_debug(format_args!(
-        "browser_debug_layout source={source} main_window scale_factor={scale_factor:?} inner_position={inner_position:?} inner_size={inner_size:?}"
-    ));
-
-    match browser_fit_bounds(&main_window, toolbar_height, BrowserWindowSize::Current) {
-        Ok(expected_bounds) => {
-            log_browser_debug(format_args!(
-                "browser_debug_layout source={source} expected_browser position={:?} size={:?}",
-                expected_bounds.position, expected_bounds.size
-            ));
-        }
-        Err(error) => {
-            log_browser_debug(format_args!(
-                "browser_debug_layout source={source} expected_browser failed error={error}"
-            ));
-        }
-    }
-
-    let Some(browser) = app.get_webview(BROWSER_WEBVIEW_LABEL) else {
-        log_browser_debug(format_args!(
-            "browser_debug_layout source={source} browser_webview=unavailable"
-        ));
-        return;
-    };
-
-    match browser.bounds() {
-        Ok(actual_bounds) => {
-            log_browser_debug(format_args!(
-                "browser_debug_layout source={source} actual_browser position={:?} size={:?}",
-                actual_bounds.position, actual_bounds.size
-            ));
-        }
-        Err(error) => {
-            log_browser_debug(format_args!(
-                "browser_debug_layout source={source} actual_browser failed error={error}"
-            ));
-        }
-    }
-}
-
-fn format_frontend_rect(rect: Option<&FrontendDebugRect>) -> String {
-    match rect {
-        Some(rect) => format!(
-            "x={} y={} width={} height={} top={} bottom={}",
-            rect.x, rect.y, rect.width, rect.height, rect.top, rect.bottom
-        ),
-        None => "missing".to_string(),
     }
 }
 
@@ -976,9 +806,6 @@ fn browser_fit_bounds(
     };
     let logical_toolbar_height = toolbar_height.round().max(1.0);
     let logical_browser_height = (logical_size.height - logical_toolbar_height).max(1.0);
-    log_browser_debug(format_args!(
-        "browser_fit_bounds scale_factor={scale_factor} logical_size={logical_size:?} toolbar_height={toolbar_height} logical_toolbar_height={logical_toolbar_height} logical_browser_height={logical_browser_height}"
-    ));
 
     Ok(BrowserFitBounds {
         position: Position::Logical(LogicalPosition::new(0.0, logical_toolbar_height)),
@@ -1062,10 +889,6 @@ fn sanitize_title(title: &str) -> String {
     } else {
         title.chars().take(120).collect()
     }
-}
-
-fn log_browser_debug(args: std::fmt::Arguments<'_>) {
-    eprintln!("[ai-assistant-browser] {args}");
 }
 
 trait BrowserStoreExt {
