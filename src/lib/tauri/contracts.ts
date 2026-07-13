@@ -17,8 +17,42 @@ export interface BrowserState {
   title: string;
   isLoading: boolean;
   isContentProtected: boolean;
+  windowOpacity: number;
   lastDownload: BrowserDownload | null;
   lastError: string | null;
+}
+
+export interface BrowserDebugRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top: number;
+  bottom: number;
+}
+
+export interface BrowserDebugLayoutRequest {
+  source: string;
+  frontend: {
+    isTransparencyOpen: boolean;
+    topHeight: number | null;
+    topLayerRect: BrowserDebugRect | null;
+    transparencyButtonRect: BrowserDebugRect | null;
+    transparencyRowRect: BrowserDebugRect | null;
+    transparencyControlRect: BrowserDebugRect | null;
+    transparencyRangeRect: BrowserDebugRect | null;
+    topLayerZIndex: string;
+    transparencyControlZIndex: string;
+  };
+}
+
+export interface BrowserTransparencyOverlayRequest {
+  isOpen: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  opacityPercent: number;
 }
 
 export interface CaptionState {
@@ -111,6 +145,12 @@ export interface CommandMap {
     };
     response: BrowserState;
   };
+  browser_debug_layout: {
+    args: {
+      request: BrowserDebugLayoutRequest;
+    };
+    response: undefined;
+  };
   browser_set_content_protected: {
     args: {
       request: {
@@ -118,6 +158,20 @@ export interface CommandMap {
       };
     };
     response: BrowserState;
+  };
+  browser_set_window_opacity: {
+    args: {
+      request: {
+        opacity: number;
+      };
+    };
+    response: BrowserState;
+  };
+  browser_set_transparency_overlay: {
+    args: {
+      request: BrowserTransparencyOverlayRequest;
+    };
+    response: undefined;
   };
   captions_get_state: {
     args: undefined;

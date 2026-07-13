@@ -1,15 +1,14 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   applyHotkeySettings,
-  clearBrowserSession,
+  debugBrowserLayout,
   getAutomationState,
   focusBrowser,
   getBrowserState,
   getCaptionState,
   getHotkeyState,
   goBrowserBack,
-  goBrowserForward,
   listenToAutomationState,
   listenToBrowserState,
   listenToCaptionState,
@@ -18,17 +17,16 @@ import {
   openBrowserHome,
   reloadBrowser,
   resizeBrowser,
-  runShortcutMode1,
-  runShortcutMode2,
-  runShortcutMode3,
   setBrowserContentProtected,
+  setBrowserTransparencyOverlay,
   startCaptions,
   stopCaptions,
-  submitAfterUpload,
   submitCaptionsToChatGpt,
 } from './lib/tauri/client';
 import type {
   AutomationState,
+  BrowserDebugLayoutRequest,
+  BrowserDebugRect,
   BrowserState,
   CaptionState,
   HotkeyBindingRequest,
@@ -72,6 +70,7 @@ const initialBrowserState: BrowserState = {
   title: 'ChatGPT',
   isLoading: true,
   isContentProtected: false,
+  windowOpacity: 1,
   lastDownload: null,
   lastError: null,
 };
@@ -102,12 +101,19 @@ const initialHotkeyState: HotkeyState = {
   lastError: null,
 };
 
+const DEBUG_LOG_PREFIX = '[ai-assistant-browser]';
+const TRANSPARENCY_CONTROL_WIDTH = 220;
+const TRANSPARENCY_CONTROL_MARGIN = 8;
+const TRANSPARENCY_OVERLAY_TOP = 46;
+const TRANSPARENCY_OVERLAY_HEIGHT = 43;
+
 export function App() {
   return <BrowserWindow />;
 }
 
 function BrowserWindow() {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
   const [browserState, setBrowserState] = useState<BrowserState>(initialBrowserState);
   const [captionState, setCaptionState] = useState<CaptionState>(initialCaptionState);
   const [automationState, setAutomationState] = useState<AutomationState>(initialAutomationState);
@@ -115,6 +121,8 @@ function BrowserWindow() {
   const [address, setAddress] = useState(initialBrowserState.currentUrl);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isTransparencyOpen, setIsTransparencyOpen] = useState(false);
+  const [transparencyControlLeft, setTransparencyControlLeft] = useState(TRANSPARENCY_CONTROL_MARGIN);
   const [shortcutDraft, setShortcutDraft] =
     useState<Record<HotkeyAction, string>>(defaultShortcutDraft);
 
@@ -206,6 +214,49 @@ function BrowserWindow() {
     }
   }, [hotkeyState, isSettingsOpen]);
 
+  const getReservedTopHeight = useCallback(() => {
+    if (!toolbarRef.current) {
+      return 0;
+    }
+
+    const reservedTopHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+
+    logDebug('resize:reserved-top-height', {
+      reservedTopHeight,
+    });
+
+    return reservedTopHeight;
+  }, []);
+
+  useEffect(() => {
+    if (!isTransparencyOpen) {
+      return;
+    }
+
+    const logTransparencyMetrics = () => {
+      updateTransparencyControlPosition();
+      logElementMetrics('transparency:top-layer-metrics', '.browser-top-layer');
+      logElementMetrics('transparency:button-metrics', '#transparency-button');
+      void sendBrowserDebugLayout('transparency:metrics', true);
+    };
+
+    logTransparencyMetrics();
+    const firstFrame = window.requestAnimationFrame(() => {
+      logTransparencyMetrics();
+    });
+    const settleTimer = window.setTimeout(logTransparencyMetrics, 150);
+
+    window.addEventListener('resize', logTransparencyMetrics);
+    window.visualViewport?.addEventListener('resize', logTransparencyMetrics);
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('resize', logTransparencyMetrics);
+      window.visualViewport?.removeEventListener('resize', logTransparencyMetrics);
+    };
+  }, [isTransparencyOpen]);
+
   useEffect(() => {
     let animationFrame: number | null = null;
     const settleTimers: number[] = [];
@@ -223,16 +274,28 @@ function BrowserWindow() {
           return;
         }
 
-        const toolbarHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+        const toolbarHeight = getReservedTopHeight();
+        logDebug('resize:measured-top-layer', {
+          toolbarHeight,
+          isSettingsOpen,
+        });
 
         void resizeBrowser(toolbarHeight)
           .then((state) => {
             if (!isDisposed) {
+              logDebug('resize:complete', {
+                toolbarHeight,
+                windowOpacity: state.windowOpacity,
+              });
               setBrowserState(state);
             }
           })
           .catch((error: unknown) => {
             if (!isDisposed) {
+              logDebug('resize:failed', {
+                toolbarHeight,
+                error: getErrorMessage(error),
+              });
               setCommandError(getErrorMessage(error));
             }
           });
@@ -280,7 +343,23 @@ function BrowserWindow() {
         window.cancelAnimationFrame(animationFrame);
       }
     };
-  }, [isSettingsOpen]);
+  }, [getReservedTopHeight, isSettingsOpen]);
+
+  useEffect(() => {
+    const opacityPercent = Math.round(browserState.windowOpacity * 100);
+
+    void setBrowserTransparencyOverlay({
+      isOpen: isTransparencyOpen,
+      left: transparencyControlLeft,
+      top: TRANSPARENCY_OVERLAY_TOP,
+      width: TRANSPARENCY_CONTROL_WIDTH,
+      height: TRANSPARENCY_OVERLAY_HEIGHT,
+      opacityPercent,
+    }).catch((error: unknown) => {
+      logDebug('transparency:overlay-failed', { error: getErrorMessage(error) });
+      setCommandError(getErrorMessage(error));
+    });
+  }, [browserState.windowOpacity, isTransparencyOpen, transparencyControlLeft]);
 
   const statusText = useMemo(() => {
     if (browserState.isLoading) {
@@ -366,18 +445,6 @@ function BrowserWindow() {
     }
   }
 
-  async function runAutomation(command: () => Promise<AutomationState>) {
-    setCommandError(null);
-
-    try {
-      const nextState = await command();
-      setAutomationState(nextState);
-      await focusBrowser();
-    } catch (error) {
-      setCommandError(getErrorMessage(error));
-    }
-  }
-
   async function toggleContentProtection() {
     const requestedContentProtected = !browserState.isContentProtected;
     setCommandError(null);
@@ -388,6 +455,21 @@ function BrowserWindow() {
     } catch (error) {
       setCommandError(getErrorMessage(error));
     }
+  }
+
+  function toggleTransparencyControls() {
+    const nextIsOpen = !isTransparencyOpen;
+
+    if (nextIsOpen) {
+      updateTransparencyControlPosition();
+    }
+
+    logDebug('transparency:toggle', {
+      isOpen: nextIsOpen,
+      zIndex: getTopLayerZIndex(),
+    });
+
+    setIsTransparencyOpen(nextIsOpen);
   }
 
   function openSettings() {
@@ -406,9 +488,15 @@ function BrowserWindow() {
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (toolbarRef.current) {
-          void resizeBrowserToTopHeight(
-            Math.ceil(toolbarRef.current.getBoundingClientRect().height),
-          );
+          updateTransparencyControlPosition();
+          const topHeight = getReservedTopHeight();
+          logDebug('resize:scheduled-top-layer', {
+            topHeight,
+            isSettingsOpen,
+            isTransparencyOpen,
+          });
+          void sendBrowserDebugLayout('resize:scheduled-top-layer', isTransparencyOpen);
+          void resizeBrowserToTopHeight(topHeight);
         }
       });
     });
@@ -443,10 +531,40 @@ function BrowserWindow() {
   async function resizeBrowserToTopHeight(topHeight: number) {
     try {
       const nextState = await resizeBrowser(topHeight);
+      logDebug('resize:scheduled-complete', { topHeight });
       setBrowserState(nextState);
     } catch (error) {
+      logDebug('resize:scheduled-failed', { topHeight, error: getErrorMessage(error) });
       setCommandError(getErrorMessage(error));
     }
+  }
+
+  function updateTransparencyControlPosition() {
+    if (!toolbarRef.current || !transparencyButtonRef.current) {
+      return;
+    }
+
+    const topLayerRect = toolbarRef.current.getBoundingClientRect();
+    const buttonRect = transparencyButtonRef.current.getBoundingClientRect();
+    const buttonCenter = buttonRect.left - topLayerRect.left + buttonRect.width / 2;
+    const maxLeft = Math.max(
+      TRANSPARENCY_CONTROL_MARGIN,
+      topLayerRect.width - TRANSPARENCY_CONTROL_WIDTH - TRANSPARENCY_CONTROL_MARGIN,
+    );
+    const nextLeft = Math.round(
+      Math.min(
+        maxLeft,
+        Math.max(TRANSPARENCY_CONTROL_MARGIN, buttonCenter - TRANSPARENCY_CONTROL_WIDTH / 2),
+      ),
+    );
+
+    logDebug('transparency:position', {
+      buttonCenter: Math.round(buttonCenter),
+      topLayerWidth: Math.round(topLayerRect.width),
+      controlLeft: nextLeft,
+      maxLeft: Math.round(maxLeft),
+    });
+    setTransparencyControlLeft(nextLeft);
   }
 
   return (
@@ -461,15 +579,12 @@ function BrowserWindow() {
           </div>
 
           <div className="navigation-controls" aria-label="Navigation controls">
-            <button type="button" title="Back" onClick={() => void runBrowserCommand(goBrowserBack)}>
-              &#8592;
-            </button>
             <button
               type="button"
-              title="Forward"
-              onClick={() => void runBrowserCommand(goBrowserForward)}
+              title="Back"
+              onClick={() => void runBrowserCommand(goBrowserBack)}
             >
-              &#8594;
+              &#8592;
             </button>
             <button
               type="button"
@@ -487,20 +602,13 @@ function BrowserWindow() {
             </button>
           </div>
 
-          <button
-            className="settings-button"
-            type="button"
-            title="Settings"
-            onClick={openSettings}
-          >
-            Set
+          <button className="settings-button" type="button" title="Settings" onClick={openSettings}>
+            &#9881;
           </button>
 
           <button
             className={
-              browserState.isContentProtected
-                ? 'protection-button protected'
-                : 'protection-button'
+              browserState.isContentProtected ? 'protection-button protected' : 'protection-button'
             }
             type="button"
             title={
@@ -511,7 +619,23 @@ function BrowserWindow() {
             aria-pressed={browserState.isContentProtected}
             onClick={() => void toggleContentProtection()}
           >
-            {browserState.isContentProtected ? 'Protected' : 'Visible'}
+            {browserState.isContentProtected ? <EyeOffIcon /> : <EyeIcon />}
+          </button>
+
+          <button
+            id="transparency-button"
+            ref={transparencyButtonRef}
+            className={
+              browserState.windowOpacity < 1
+                ? 'transparency-button adjusted'
+                : 'transparency-button'
+            }
+            type="button"
+            title="Transparency"
+            aria-expanded={isTransparencyOpen}
+            onClick={toggleTransparencyControls}
+          >
+            <TransparencyIcon />
           </button>
 
           <label className="address-bar">
@@ -526,46 +650,24 @@ function BrowserWindow() {
             />
           </label>
 
-          <button className="go-button" type="submit">
-            Go
-          </button>
-
           <button
-            className="danger-button"
+            className="caption-button"
             type="button"
-            title="Clear ChatGPT cookies and browser data"
-            onClick={() => void runBrowserCommand(clearBrowserSession)}
+            title={captionState.isMonitoring ? 'Stop captions' : 'Start captions'}
+            onClick={() => void toggleCaptions()}
           >
-            Clear
-          </button>
-
-          <button className="caption-button" type="button" onClick={() => void toggleCaptions()}>
-            {captionState.isMonitoring ? 'Stop Caption' : 'Start Caption'}
+            <CaptionsIcon />
           </button>
 
           <button
             className="caption-submit-button"
             type="button"
+            title="Send captions"
             disabled={!captionState.pendingCaptionText && !captionState.currentCaptionText}
             onClick={() => void submitCaptions()}
           >
-            Submit Caption
+            <SendIcon />
           </button>
-
-          <div className="automation-controls" aria-label="Automation shortcuts">
-            <button type="button" onClick={() => void runAutomation(runShortcutMode1)}>
-              1
-            </button>
-            <button type="button" onClick={() => void runAutomation(runShortcutMode2)}>
-              2
-            </button>
-            <button type="button" onClick={() => void runAutomation(runShortcutMode3)}>
-              3
-            </button>
-            <button type="button" onClick={() => void runAutomation(submitAfterUpload)}>
-              Enter
-            </button>
-          </div>
 
           <div className="browser-status" role="status">
             <span
@@ -638,6 +740,56 @@ function BrowserWindow() {
   );
 }
 
+function EyeIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.75" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M3 3l18 18" />
+      <path d="M8.6 5.5A10.5 10.5 0 0 1 12 5c6 0 9.5 7 9.5 7a18 18 0 0 1-2.4 3.2" />
+      <path d="M15.2 18.1A10.5 10.5 0 0 1 12 18c-6 0-9.5-6-9.5-6a17 17 0 0 1 3.1-3.7" />
+      <path d="M10 10.2a2.75 2.75 0 0 0 3.8 3.8" />
+    </svg>
+  );
+}
+
+function TransparencyIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M12 3.5 7 10a6 6 0 1 0 10 0L12 3.5Z" />
+      <path d="M8.8 15.5a4.4 4.4 0 0 0 6.4 0" />
+    </svg>
+  );
+}
+
+function CaptionsIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <rect x="3.5" y="5.5" width="17" height="13" rx="2.5" />
+      <path d="M7.5 10.5h3" />
+      <path d="M13.5 10.5h3" />
+      <path d="M7.5 14h4" />
+      <path d="M13.5 14h3" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M4 12 20 4l-5 16-3.2-6.8L4 12Z" />
+      <path d="m11.8 13.2 3.6-3.6" />
+    </svg>
+  );
+}
+
 function shortcutDraftFromHotkeys(hotkeyState: HotkeyState): Record<HotkeyAction, string> {
   const draft = { ...defaultShortcutDraft };
 
@@ -658,4 +810,113 @@ function getErrorMessage(error: unknown) {
   }
 
   return 'The browser command failed.';
+}
+
+function getTopLayerZIndex() {
+  const topLayer = document.querySelector('.browser-top-layer');
+
+  if (!(topLayer instanceof HTMLElement)) {
+    return 'unavailable';
+  }
+
+  return window.getComputedStyle(topLayer).zIndex;
+}
+
+function logElementMetrics(event: string, selector: string) {
+  const element = document.querySelector(selector);
+
+  if (!(element instanceof HTMLElement)) {
+    logDebug(event, { selector, found: false });
+    return;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+
+  logDebug(event, {
+    selector,
+    found: true,
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      top: Math.round(rect.top),
+      bottom: Math.round(rect.bottom),
+    },
+    display: style.display,
+    visibility: style.visibility,
+    opacity: style.opacity,
+    zIndex: style.zIndex,
+    color: style.color,
+    backgroundColor: style.backgroundColor,
+    pointerEvents: style.pointerEvents,
+  });
+}
+
+async function sendBrowserDebugLayout(source: string, isTransparencyOpen = false) {
+  const request = buildBrowserDebugLayoutRequest(source, isTransparencyOpen);
+  logDebug('debug-layout:send', {
+    source,
+    topHeight: request.frontend.topHeight,
+    topLayerRect: request.frontend.topLayerRect,
+    transparencyRowRect: request.frontend.transparencyRowRect,
+    transparencyControlRect: request.frontend.transparencyControlRect,
+    transparencyRangeRect: request.frontend.transparencyRangeRect,
+  });
+
+  try {
+    await debugBrowserLayout(request);
+  } catch (error) {
+    logDebug('debug-layout:failed', { source, error: getErrorMessage(error) });
+  }
+}
+
+function buildBrowserDebugLayoutRequest(
+  source: string,
+  isTransparencyOpen: boolean,
+): BrowserDebugLayoutRequest {
+  const topLayer = document.querySelector('.browser-top-layer');
+
+  return {
+    source,
+    frontend: {
+      isTransparencyOpen,
+      topHeight:
+        topLayer instanceof HTMLElement
+          ? Math.ceil(topLayer.getBoundingClientRect().height)
+          : null,
+      topLayerRect: getDebugRect('.browser-top-layer'),
+      transparencyButtonRect: getDebugRect('#transparency-button'),
+      transparencyRowRect: null,
+      transparencyControlRect: getDebugRect('#transparency-controls'),
+      transparencyRangeRect: getDebugRect('#transparency-opacity-range'),
+      topLayerZIndex:
+        topLayer instanceof HTMLElement ? window.getComputedStyle(topLayer).zIndex : 'unavailable',
+      transparencyControlZIndex: 'native-overlay',
+    },
+  };
+}
+
+function getDebugRect(selector: string): BrowserDebugRect | null {
+  const element = document.querySelector(selector);
+
+  if (!(element instanceof HTMLElement)) {
+    return null;
+  }
+
+  const rect = element.getBoundingClientRect();
+
+  return {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    top: Math.round(rect.top),
+    bottom: Math.round(rect.bottom),
+  };
+}
+
+function logDebug(event: string, details: Record<string, unknown>) {
+  console.info(DEBUG_LOG_PREFIX, event, details);
 }

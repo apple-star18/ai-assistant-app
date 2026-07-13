@@ -4,8 +4,10 @@ import { listen } from '@tauri-apps/api/event';
 import type {
   AutomationState,
   BrowserState,
+  BrowserTransparencyOverlayRequest,
   CaptionState,
   CommandMap,
+  BrowserDebugLayoutRequest,
   HotkeyBindingRequest,
   HotkeyState,
 } from './contracts';
@@ -56,9 +58,27 @@ export function resizeBrowser(toolbarHeight: number) {
   });
 }
 
+export function debugBrowserLayout(request: BrowserDebugLayoutRequest) {
+  return invokeCommand('browser_debug_layout', {
+    request,
+  });
+}
+
 export function setBrowserContentProtected(isContentProtected: boolean) {
   return invokeCommand('browser_set_content_protected', {
     request: { isContentProtected },
+  });
+}
+
+export function setBrowserWindowOpacity(opacity: number) {
+  return invokeCommand('browser_set_window_opacity', {
+    request: { opacity },
+  });
+}
+
+export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverlayRequest) {
+  return invokeCommand('browser_set_transparency_overlay', {
+    request,
   });
 }
 

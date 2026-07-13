@@ -11,7 +11,14 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default tseslint.config(
   {
-    ignores: ['dist', 'node_modules', 'src-tauri/target', 'src-tauri/gen', 'eslint.config.js'],
+    ignores: [
+      'dist',
+      'node_modules',
+      'public',
+      'src-tauri/target',
+      'src-tauri/gen',
+      'eslint.config.js',
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
