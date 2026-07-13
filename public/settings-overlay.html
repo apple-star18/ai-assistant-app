@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        color: #d8dee8;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        font-size: 12px;
+        padding-top: 7px;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      .panel {
+        --indicator-left: 50%;
+        --panel-border-color: #2f3743;
+        --panel-background-color: #0d1118;
+        position: relative;
+        display: grid;
+        width: 100%;
+        height: calc(100% - 7px);
+        grid-template-rows: auto 1fr auto;
+        gap: 7px;
+        border: 1px solid var(--panel-border-color);
+        border-radius: 8px;
+        background: var(--panel-background-color);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.46);
+        padding: 9px 10px 9px 12px;
+      }
+
+      .panel::before {
+        position: absolute;
+        top: -5px;
+        left: var(--indicator-left);
+        width: 9px;
+        height: 9px;
+        border-top: 1px solid var(--panel-border-color);
+        border-left: 1px solid var(--panel-border-color);
+        background: var(--panel-background-color);
+        content: '';
+        transform: translateX(-50%) rotate(45deg);
+      }
+
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      h1 {
+        margin: 0;
+        color: #f4f6f8;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+
+      .fields {
+        display: grid;
+        align-content: start;
+        gap: 6px;
+      }
+
+      .field {
+        display: grid;
+        grid-template-columns: 104px minmax(0, 1fr);
+        gap: 3px 8px;
+        align-items: center;
+      }
+
+      .field-label {
+        color: #cbd5e1;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      input {
+        width: 100%;
+        height: 28px;
+        border: 1px solid #2f3743;
+        border-radius: 6px;
+        background: #0f131a;
+        color: #f4f6f8;
+        font-size: 11px;
+        line-height: 28px;
+        padding: 0 9px;
+        cursor: default;
+      }
+
+      input.recording,
+      input:focus-visible {
+        border-color: #449c7c;
+        background: #10201a;
+        outline: 2px solid rgba(68, 156, 124, 0.36);
+        outline-offset: 1px;
+      }
+
+      input.invalid {
+        border-color: #b85d6d;
+        background: #2e1219;
+        color: #f2a7b3;
+        outline: 2px solid rgba(242, 167, 179, 0.22);
+        outline-offset: 1px;
+      }
+
+      .status {
+        grid-column: 2;
+        min-width: 0;
+        overflow: hidden;
+        color: #aab4c2;
+        font-size: 10px;
+        line-height: 1.2;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .status.error,
+      .message.error {
+        color: #f2a7b3;
+      }
+
+      .message {
+        min-width: 0;
+        overflow: hidden;
+        color: #9aa4b2;
+        font-size: 10px;
+        line-height: 1.2;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .icon-button {
+        display: inline-grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border: 1px solid #343b47;
+        border-radius: 6px;
+        background: #151922;
+        color: #eef2f6;
+        line-height: 1;
+        padding: 0;
+      }
+
+      .icon-button:hover {
+        background: #202632;
+      }
+
+      .icon-button.primary {
+        border-color: #315b4c;
+        color: #dff8ef;
+      }
+
+      .icon-button.primary:hover {
+        background: #183126;
+      }
+
+      .icon-button svg {
+        width: 15px;
+        height: 15px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2.25;
+      }
+    </style>
+  </head>
+  <body>
+    <form class="panel" id="settings-form" aria-labelledby="settings-title">
+      <div class="header">
+        <h1 id="settings-title">Settings</h1>
+        <button
+          class="icon-button primary"
+          type="submit"
+          title="Apply settings"
+          aria-label="Apply settings"
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="fields" id="fields"></div>
+
+      <div class="message" id="message" role="status"></div>
+    </form>
+    <script src="/settings-overlay.js"></script>
+  </body>
+</html>

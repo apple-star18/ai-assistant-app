@@ -1,4 +1,6 @@
 use std::{
+    fs,
+    path::PathBuf,
     sync::{
         mpsc::{self, Receiver, Sender},
         Mutex, MutexGuard,
@@ -25,6 +27,7 @@ const HOTKEY_MODE_1_ID: i32 = 101;
 const HOTKEY_MODE_2_ID: i32 = 102;
 const HOTKEY_MODE_3_ID: i32 = 103;
 const HOTKEY_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+const HOTKEY_SETTINGS_FILE: &str = "hotkeys.json";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +85,19 @@ pub struct HotkeyBindingRequest {
     accelerator: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredHotkeySettings {
+    bindings: Vec<StoredHotkeyBinding>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredHotkeyBinding {
+    action: String,
+    accelerator: String,
+}
+
 #[derive(Clone)]
 struct HotkeyBinding {
     id: i32,
@@ -110,6 +126,11 @@ type CommandResult<T> = Result<T, HotkeyCommandError>;
 pub fn setup(app: &AppHandle) {
     let app_handle = app.clone();
     let (sender, receiver) = mpsc::channel();
+    let (initial_bindings, initial_error) = match load_hotkey_settings(app) {
+        Ok(Some(bindings)) => (bindings, None),
+        Ok(None) => (default_hotkeys(), None),
+        Err(message) => (default_hotkeys(), Some(message)),
+    };
 
     if let Ok(mut controller) = app.state::<HotkeyStore>().controller.lock() {
         *controller = Some(sender);
@@ -117,7 +138,7 @@ pub fn setup(app: &AppHandle) {
 
     if let Err(error) = thread::Builder::new()
         .name("global-hotkey-listener".to_string())
-        .spawn(move || run_hotkey_thread(app_handle, receiver))
+        .spawn(move || run_hotkey_thread(app_handle, receiver, initial_bindings, initial_error))
     {
         if let Ok(mut controller) = app.state::<HotkeyStore>().controller.lock() {
             *controller = None;
@@ -137,6 +158,7 @@ pub fn hotkeys_get_state(state: State<'_, HotkeyStore>) -> CommandResult<HotkeyS
 
 #[tauri::command]
 pub fn hotkeys_apply_settings(
+    app: AppHandle,
     state: State<'_, HotkeyStore>,
     request: HotkeySettingsRequest,
 ) -> CommandResult<HotkeySnapshot> {
@@ -145,6 +167,7 @@ pub fn hotkeys_apply_settings(
             code: "invalid_hotkeys",
             message,
         })?;
+    let stored_settings = stored_settings_from_bindings(&bindings);
 
     let sender = state.controller()?;
     let (reply_sender, reply_receiver) = mpsc::channel();
@@ -160,7 +183,13 @@ pub fn hotkeys_apply_settings(
         })?;
 
     match reply_receiver.recv_timeout(HOTKEY_COMMAND_TIMEOUT) {
-        Ok(Ok(())) => Ok(state.snapshot()?.clone()),
+        Ok(Ok(())) => {
+            save_hotkey_settings(&app, &stored_settings).map_err(|message| HotkeyCommandError {
+                code: "hotkey_save_failed",
+                message,
+            })?;
+            Ok(state.snapshot()?.clone())
+        }
         Ok(Err(message)) => Err(HotkeyCommandError {
             code: "hotkey_apply_failed",
             message,
@@ -172,7 +201,12 @@ pub fn hotkeys_apply_settings(
     }
 }
 
-fn run_hotkey_thread(app: AppHandle, receiver: Receiver<HotkeyCommand>) {
+fn run_hotkey_thread(
+    app: AppHandle,
+    receiver: Receiver<HotkeyCommand>,
+    initial_bindings: Vec<HotkeyBinding>,
+    initial_error: Option<String>,
+) {
     let mut registered = Vec::new();
 
     update_snapshot(&app, |snapshot| {
@@ -181,7 +215,16 @@ fn run_hotkey_thread(app: AppHandle, receiver: Receiver<HotkeyCommand>) {
         snapshot.bindings.clear();
     });
 
-    let _ = apply_hotkey_bindings(&app, &mut registered, default_hotkeys());
+    let initial_apply_result = apply_hotkey_bindings(&app, &mut registered, initial_bindings);
+    if let Some(message) = initial_error {
+        update_snapshot(&app, |snapshot| {
+            snapshot.last_error = Some(message);
+        });
+    } else if let Err(message) = initial_apply_result {
+        update_snapshot(&app, |snapshot| {
+            snapshot.last_error = Some(message);
+        });
+    }
 
     let mut message = MSG::default();
 
@@ -359,6 +402,87 @@ fn hotkey_bindings_from_request(
     Ok(bindings)
 }
 
+fn load_hotkey_settings(app: &AppHandle) -> Result<Option<Vec<HotkeyBinding>>, String> {
+    let path = hotkey_settings_path(app)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let contents = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "Failed to read saved shortcut settings from {}: {error}",
+            path.display()
+        )
+    })?;
+    let settings: StoredHotkeySettings = serde_json::from_str(&contents).map_err(|error| {
+        format!(
+            "Saved shortcut settings in {} are invalid: {error}",
+            path.display()
+        )
+    })?;
+    let request = HotkeySettingsRequest {
+        bindings: settings
+            .bindings
+            .into_iter()
+            .map(|binding| HotkeyBindingRequest {
+                action: binding.action,
+                accelerator: binding.accelerator,
+            })
+            .collect(),
+    };
+
+    hotkey_bindings_from_request(&request)
+        .map(Some)
+        .map_err(|message| format!("Saved shortcut settings are invalid: {message}"))
+}
+
+fn save_hotkey_settings(
+    app: &AppHandle,
+    settings: &StoredHotkeySettings,
+) -> Result<(), String> {
+    let path = hotkey_settings_path(app)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Shortcut settings path has no parent directory.".to_string())?;
+
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "Failed to create shortcut settings directory {}: {error}",
+            parent.display()
+        )
+    })?;
+
+    let contents = serde_json::to_string_pretty(settings)
+        .map_err(|error| format!("Failed to serialize shortcut settings: {error}"))?;
+
+    fs::write(&path, contents).map_err(|error| {
+        format!(
+            "Failed to save shortcut settings to {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn hotkey_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(HOTKEY_SETTINGS_FILE))
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))
+}
+
+fn stored_settings_from_bindings(bindings: &[HotkeyBinding]) -> StoredHotkeySettings {
+    StoredHotkeySettings {
+        bindings: bindings
+            .iter()
+            .map(|binding| StoredHotkeyBinding {
+                action: binding.action.as_str().to_string(),
+                accelerator: binding.accelerator.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn parse_accelerator(value: &str) -> Result<(HOT_KEY_MODIFIERS, u32, String), String> {
     let mut modifiers = 0;
     let mut key = None;
@@ -461,6 +585,14 @@ impl HotkeyBinding {
 }
 
 impl HotkeyAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Mode1 => "shortcutMode1",
+            Self::Mode2 => "shortcutMode2",
+            Self::Mode3 => "shortcutMode3",
+        }
+    }
+
     fn from_str(value: &str) -> Option<Self> {
         match value {
             "shortcutMode1" => Some(Self::Mode1),

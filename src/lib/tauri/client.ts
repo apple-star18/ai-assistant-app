@@ -3,11 +3,11 @@ import { listen } from '@tauri-apps/api/event';
 
 import type {
   AutomationState,
+  BrowserSettingsOverlayRequest,
   BrowserState,
   BrowserTransparencyOverlayRequest,
   CaptionState,
   CommandMap,
-  BrowserDebugLayoutRequest,
   HotkeyBindingRequest,
   HotkeyState,
 } from './contracts';
@@ -58,12 +58,6 @@ export function resizeBrowser(toolbarHeight: number) {
   });
 }
 
-export function debugBrowserLayout(request: BrowserDebugLayoutRequest) {
-  return invokeCommand('browser_debug_layout', {
-    request,
-  });
-}
-
 export function setBrowserContentProtected(isContentProtected: boolean) {
   return invokeCommand('browser_set_content_protected', {
     request: { isContentProtected },
@@ -78,6 +72,12 @@ export function setBrowserWindowOpacity(opacity: number) {
 
 export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverlayRequest) {
   return invokeCommand('browser_set_transparency_overlay', {
+    request,
+  });
+}
+
+export function setBrowserSettingsOverlay(request: BrowserSettingsOverlayRequest) {
+  return invokeCommand('browser_set_settings_overlay', {
     request,
   });
 }
@@ -147,6 +147,12 @@ export function listenToAutomationState(onState: (state: AutomationState) => voi
 export function listenToHotkeyState(onState: (state: HotkeyState) => void) {
   return listen<HotkeyState>('hotkeys://state', (event) => {
     onState(event.payload);
+  });
+}
+
+export function listenToSettingsOverlayClosed(onClose: () => void) {
+  return listen('settings-overlay://closed', () => {
+    onClose();
   });
 }
 

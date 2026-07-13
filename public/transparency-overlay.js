@@ -17,9 +17,7 @@ async function applyOpacity() {
         opacity: opacityPercent / 100,
       },
     });
-  } catch (error) {
-    console.info('[ai-assistant-browser] transparency_overlay opacity_failed', error);
-  }
+  } catch {}
 }
 
 window.setOpacityPercent = setOpacityPercent;
