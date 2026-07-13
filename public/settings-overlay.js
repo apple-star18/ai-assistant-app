@@ -6,23 +6,26 @@ const shortcutFields = [
   {
     action: 'shortcutMode1',
     label: 'Caption Submit',
-    defaultAccelerator: 'Ctrl+Alt+1',
+    defaultAccelerator: 'Ctrl+Enter',
   },
   {
     action: 'shortcutMode2',
     label: 'Capture + Caption',
-    defaultAccelerator: 'Ctrl+Alt+2',
+    defaultAccelerator: 'Ctrl+Shift+Enter',
   },
   {
     action: 'shortcutMode3',
     label: 'Capture Only',
-    defaultAccelerator: 'Ctrl+Alt+3',
+    defaultAccelerator: 'Ctrl+Shift+S',
   },
 ];
 
 let hotkeyState = {
   bindings: [],
   lastError: null,
+};
+let automationPreferences = {
+  keepExistingPrompt: false,
 };
 
 function invoke(command, payload) {
@@ -52,6 +55,16 @@ function statusFor(field) {
 }
 
 function renderFields() {
+  const keepPromptLabel = document.createElement('label');
+  keepPromptLabel.className = 'checkbox-field';
+  const keepPromptInput = document.createElement('input');
+  keepPromptInput.type = 'checkbox';
+  keepPromptInput.name = 'keepExistingPrompt';
+  keepPromptInput.checked = Boolean(automationPreferences.keepExistingPrompt);
+  const keepPromptText = document.createElement('span');
+  keepPromptText.textContent = 'Keep existing prompt when Mode 1 or Mode 2 adds new captions';
+  keepPromptLabel.append(keepPromptInput, keepPromptText);
+
   fieldsElement.replaceChildren(
     ...shortcutFields.map((field) => {
       const status = statusFor(field);
@@ -93,6 +106,7 @@ function renderFields() {
       label.append(labelText, input, statusText);
       return label;
     }),
+    keepPromptLabel,
   );
 }
 
@@ -255,7 +269,10 @@ function setMessage(text, isError = false) {
 
 async function refreshHotkeys() {
   try {
-    hotkeyState = await invoke('hotkeys_get_state');
+    [hotkeyState, automationPreferences] = await Promise.all([
+      invoke('hotkeys_get_state'),
+      invoke('automation_get_preferences'),
+    ]);
     renderFields();
     setMessage(hotkeyState.lastError || '');
   } catch (error) {
@@ -291,6 +308,11 @@ async function applySettings(event) {
   }));
 
   try {
+    automationPreferences = await invoke('automation_apply_preferences', {
+      request: {
+        keepExistingPrompt: formData.get('keepExistingPrompt') === 'on',
+      },
+    });
     hotkeyState = await invoke('hotkeys_apply_settings', {
       request: {
         bindings,

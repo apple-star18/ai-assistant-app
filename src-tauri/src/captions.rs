@@ -34,7 +34,6 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const CAPTION_EVENT: &str = "captions://state";
 const POLL_INTERVAL: Duration = Duration::from_millis(450);
 const WINDOW_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(12);
-const MAX_BUFFER_LINES: usize = 80;
 const MAX_DESCENDANTS_TO_SCAN: i32 = 600;
 const MIN_SOURCE_OVERLAP_CHARS: usize = 8;
 
@@ -174,6 +173,33 @@ pub fn captions_stop(
     Ok(state.snapshot()?.clone())
 }
 
+pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<CaptionStore>();
+    let monitor = state
+        .monitor
+        .lock()
+        .map_err(|_| "Caption monitor state is unavailable.".to_string())?
+        .take();
+
+    if let Some(monitor) = monitor {
+        monitor.stop_requested.store(true, Ordering::Release);
+        // Let the monitor observe cancellation and release its UI Automation objects. Because
+        // it was removed from the store first, a late exit cannot overwrite the reset snapshot.
+        thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
+    }
+
+    let next_snapshot = {
+        let mut snapshot = state
+            .snapshot
+            .lock()
+            .map_err(|_| "Caption state is unavailable.".to_string())?;
+        *snapshot = CaptionSnapshot::default();
+        snapshot.clone()
+    };
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, CAPTION_EVENT, next_snapshot);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn captions_submit_to_chatgpt(
     app: AppHandle,
@@ -214,6 +240,51 @@ pub fn caption_text_for_submission(state: &State<'_, CaptionStore>) -> Result<St
     } else {
         Ok(caption_text)
     }
+}
+
+/// Detaches everything collected so far into a hotkey submission batch.
+///
+/// The boundary is advanced immediately, rather than after browser automation finishes, so
+/// captions observed after the hotkey press always belong to the next batch. The detached text
+/// is owned by the hotkey worker and is dropped when that worker succeeds or gives up.
+pub fn take_caption_batch_for_hotkey(app: &AppHandle) -> Result<String, String> {
+    let state = app.state::<CaptionStore>();
+    let (caption_text, next_snapshot) = {
+        let mut snapshot = state
+            .snapshot
+            .lock()
+            .map_err(|_| "Caption state is unavailable.".to_string())?;
+        let caption_text = take_caption_batch_from_snapshot(&mut snapshot)?;
+        (caption_text, snapshot.clone())
+    };
+
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, CAPTION_EVENT, next_snapshot);
+    Ok(caption_text)
+}
+
+fn take_caption_batch_from_snapshot(snapshot: &mut CaptionSnapshot) -> Result<String, String> {
+    let source = if snapshot.pending_caption_text.trim().is_empty() {
+        &snapshot.current_caption_text
+    } else {
+        &snapshot.pending_caption_text
+    };
+    let caption_text = clean_caption_text(source);
+
+    if caption_text.is_empty() {
+        return Err("No caption text is ready to submit.".to_string());
+    }
+
+    // Keep only the bounded visible source as the next collection boundary. Do not retain the
+    // detached batch in the shared store; the worker owns it until its final attempt completes.
+    snapshot.last_submitted_source_text = submitted_source_text(snapshot, &caption_text);
+    snapshot.last_submitted_caption_text.clear();
+    snapshot.current_caption_text.clear();
+    snapshot.pending_caption_text.clear();
+    snapshot.latest_caption.clear();
+    snapshot.caption_buffer.clear();
+    snapshot.last_error = None;
+
+    Ok(caption_text)
 }
 
 pub fn mark_caption_submitted(app: &AppHandle, caption_text: String) {
@@ -274,7 +345,12 @@ fn run_uia_monitor(app: &AppHandle, stop_requested: &AtomicBool) -> Result<(), S
             return Ok(());
         }
 
-        match capture_caption_text(&automation) {
+        let capture_result = capture_caption_text(&automation);
+        if stop_requested.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        match capture_result {
             Ok(Some(capture)) => {
                 update_snapshot(app, |snapshot| {
                     snapshot.window_found = true;
@@ -451,9 +527,18 @@ fn push_caption(snapshot: &mut CaptionSnapshot, caption: String) {
         return;
     }
 
-    snapshot.latest_caption = caption.clone();
+    let previous_source_text = clean_caption_text(&snapshot.latest_caption);
     let source_text = clean_caption_text(&caption);
-    let pending_caption = pending_caption_text(&source_text, &snapshot.last_submitted_source_text);
+    let previous_visible_pending =
+        pending_caption_text(&previous_source_text, &snapshot.last_submitted_source_text);
+    let visible_pending = pending_caption_text(&source_text, &snapshot.last_submitted_source_text);
+    let pending_caption = merge_caption_capture(
+        &snapshot.pending_caption_text,
+        &previous_visible_pending,
+        &visible_pending,
+    );
+
+    snapshot.latest_caption = caption;
 
     if pending_caption.is_empty() {
         snapshot.current_caption_text.clear();
@@ -462,17 +547,85 @@ fn push_caption(snapshot: &mut CaptionSnapshot, caption: String) {
         return;
     }
 
-    if snapshot.caption_buffer.last() != Some(&pending_caption) {
-        snapshot.caption_buffer.push(pending_caption.clone());
-    }
-
-    if snapshot.caption_buffer.len() > MAX_BUFFER_LINES {
-        let drain_count = snapshot.caption_buffer.len() - MAX_BUFFER_LINES;
-        snapshot.caption_buffer.drain(0..drain_count);
-    }
-
+    // pending_caption_text is the single accumulated copy. Keeping every progressively larger
+    // UI capture in caption_buffer would duplicate memory during long captioning sessions.
+    snapshot.caption_buffer.clear();
     snapshot.current_caption_text = pending_caption.clone();
     snapshot.pending_caption_text = pending_caption;
+}
+
+fn merge_caption_capture(
+    accumulated: &str,
+    previous_visible: &str,
+    current_visible: &str,
+) -> String {
+    let accumulated = accumulated.trim();
+    let previous_visible = previous_visible.trim();
+    let current_visible = current_visible.trim();
+
+    if current_visible.is_empty() || current_visible == previous_visible {
+        return accumulated.to_string();
+    }
+
+    if accumulated.is_empty() {
+        return current_visible.to_string();
+    }
+
+    if previous_visible.is_empty() {
+        return merge_rolling_text(accumulated, current_visible);
+    }
+
+    if current_visible.starts_with(previous_visible) {
+        if accumulated.ends_with(previous_visible) {
+            if let Some(prefix_end) = accumulated.len().checked_sub(previous_visible.len()) {
+                return append_caption_text(&accumulated[..prefix_end], current_visible);
+            }
+        }
+
+        return merge_rolling_text(accumulated, current_visible);
+    }
+
+    if previous_visible.starts_with(current_visible) {
+        return accumulated.to_string();
+    }
+
+    if let Some(overlap_end) = longest_source_overlap_end(current_visible, previous_visible) {
+        return append_caption_text(accumulated, &current_visible[overlap_end..]);
+    }
+
+    // Live Captions can revise the most recent words. If the accumulated batch still ends with
+    // the previous visible text, replace that tail instead of appending a near-duplicate version.
+    if accumulated.ends_with(previous_visible)
+        && common_prefix_chars(previous_visible, current_visible) >= MIN_SOURCE_OVERLAP_CHARS
+    {
+        let prefix_end = accumulated.len() - previous_visible.len();
+        return append_caption_text(&accumulated[..prefix_end], current_visible);
+    }
+
+    merge_rolling_text(accumulated, current_visible)
+}
+
+fn merge_rolling_text(accumulated: &str, current: &str) -> String {
+    if accumulated == current || accumulated.ends_with(current) {
+        return accumulated.to_string();
+    }
+
+    if current.starts_with(accumulated) {
+        return current.to_string();
+    }
+
+    if let Some(overlap_end) = longest_source_overlap_end(current, accumulated) {
+        return append_caption_text(accumulated, &current[overlap_end..]);
+    }
+
+    append_caption_text(accumulated, current)
+}
+
+fn common_prefix_chars(left: &str, right: &str) -> usize {
+    left.chars()
+        .zip(right.chars())
+        .take_while(|(left, right)| left == right)
+        .count()
 }
 
 fn pending_caption_text(current: &str, last_submitted: &str) -> String {
@@ -704,7 +857,7 @@ mod tests {
 
     use super::{
         clean_caption_text, clear_monitor_if_matches, pending_caption_text, push_caption,
-        CaptionMonitor, CaptionSnapshot, CaptionStore,
+        take_caption_batch_from_snapshot, CaptionMonitor, CaptionSnapshot, CaptionStore,
     };
 
     #[test]
@@ -782,5 +935,55 @@ mod tests {
 
         assert_eq!(snapshot.current_caption_text, "Second sentence.");
         assert_eq!(snapshot.pending_caption_text, "Second sentence.");
+    }
+
+    #[test]
+    fn push_caption_keeps_text_that_rolls_out_of_the_live_captions_window() {
+        let mut snapshot = CaptionSnapshot::default();
+
+        push_caption(
+            &mut snapshot,
+            "First sentence. Second sentence.".to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "Second sentence. Third sentence.".to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "Third sentence. Fourth sentence.".to_string(),
+        );
+
+        assert_eq!(
+            snapshot.pending_caption_text,
+            "First sentence. Second sentence. Third sentence. Fourth sentence."
+        );
+        assert!(snapshot.caption_buffer.is_empty());
+    }
+
+    #[test]
+    fn push_caption_replaces_an_extended_partial_word_without_adding_a_space() {
+        let mut snapshot = CaptionSnapshot::default();
+
+        push_caption(&mut snapshot, "A partial capt".to_string());
+        push_caption(&mut snapshot, "A partial caption".to_string());
+
+        assert_eq!(snapshot.pending_caption_text, "A partial caption");
+    }
+
+    #[test]
+    fn taking_a_batch_starts_the_next_batch_at_the_hotkey_boundary() {
+        let mut snapshot = CaptionSnapshot::default();
+        push_caption(&mut snapshot, "Before hotkey.".to_string());
+
+        assert_eq!(
+            take_caption_batch_from_snapshot(&mut snapshot).expect("caption batch"),
+            "Before hotkey."
+        );
+        assert!(snapshot.pending_caption_text.is_empty());
+
+        push_caption(&mut snapshot, "Before hotkey. After hotkey.".to_string());
+
+        assert_eq!(snapshot.pending_caption_text, "After hotkey.");
     }
 }

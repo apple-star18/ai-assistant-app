@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
-        RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT,
-        MOD_WIN,
+        RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+        MOD_SHIFT, MOD_WIN,
     },
     WindowsAndMessaging::{PeekMessageW, MSG, PM_REMOVE, WM_HOTKEY},
 };
@@ -253,19 +253,52 @@ fn run_hotkey_thread(
 }
 
 fn dispatch_hotkey(app: AppHandle, action: HotkeyAction) {
-    thread::spawn(move || {
-        let result = match action {
-            HotkeyAction::Mode1 => automation::run_mode_1(&app),
-            HotkeyAction::Mode2 => automation::run_mode_2(&app),
-            HotkeyAction::Mode3 => automation::run_mode_3(&app),
-        };
+    match action {
+        HotkeyAction::Mode1 | HotkeyAction::Mode2 => {
+            let permit = match automation::try_reserve_caption_workflow(&app) {
+                Ok(permit) => permit,
+                Err(message) => {
+                    update_snapshot(&app, |snapshot| {
+                        snapshot.last_error = Some(message);
+                    });
+                    return;
+                }
+            };
 
-        if let Err(message) = result {
-            update_snapshot(&app, |snapshot| {
-                snapshot.last_error = Some(message);
+            thread::spawn(move || {
+                let result = match action {
+                    HotkeyAction::Mode1 => automation::run_mode_1_reserved(&app, permit),
+                    HotkeyAction::Mode2 => automation::run_mode_2_reserved(&app, permit),
+                    HotkeyAction::Mode3 => unreachable!(),
+                };
+                report_hotkey_result(&app, result);
             });
         }
-    });
+        HotkeyAction::Mode3 => {
+            let permit = match automation::start_mode_3_job(&app) {
+                Ok(permit) => permit,
+                Err(message) => {
+                    update_snapshot(&app, |snapshot| {
+                        snapshot.last_error = Some(message);
+                    });
+                    return;
+                }
+            };
+
+            thread::spawn(move || {
+                let result = automation::run_mode_3_reserved(&app, permit);
+                report_hotkey_result(&app, result);
+            });
+        }
+    }
+}
+
+fn report_hotkey_result(app: &AppHandle, result: Result<(), String>) {
+    if let Err(message) = result {
+        update_snapshot(app, |snapshot| {
+            snapshot.last_error = Some(message);
+        });
+    }
 }
 
 fn push_binding_snapshot(app: &AppHandle, binding: HotkeyBindingSnapshot) {
@@ -305,7 +338,9 @@ fn apply_hotkey_bindings(
     let mut errors = Vec::new();
 
     for binding in bindings {
-        match unsafe { RegisterHotKey(None, binding.id, binding.modifiers, binding.vk) } {
+        let modifiers = HOT_KEY_MODIFIERS(binding.modifiers.0 | MOD_NOREPEAT.0);
+
+        match unsafe { RegisterHotKey(None, binding.id, modifiers, binding.vk) } {
             Ok(()) => {
                 registered.push(binding.clone());
                 push_binding_snapshot(app, binding.snapshot(true, None));
@@ -336,24 +371,24 @@ fn default_hotkeys() -> Vec<HotkeyBinding> {
     vec![
         HotkeyBinding {
             id: HOTKEY_MODE_1_ID,
-            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
-            vk: b'1' as u32,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            vk: 0x0D,
             action: HotkeyAction::Mode1,
-            accelerator: "Ctrl+Alt+1".to_string(),
+            accelerator: "Ctrl+Enter".to_string(),
         },
         HotkeyBinding {
             id: HOTKEY_MODE_2_ID,
-            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
-            vk: b'2' as u32,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_SHIFT.0),
+            vk: 0x0D,
             action: HotkeyAction::Mode2,
-            accelerator: "Ctrl+Alt+2".to_string(),
+            accelerator: "Ctrl+Shift+Enter".to_string(),
         },
         HotkeyBinding {
             id: HOTKEY_MODE_3_ID,
-            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
-            vk: b'3' as u32,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_SHIFT.0),
+            vk: b'S' as u32,
             action: HotkeyAction::Mode3,
-            accelerator: "Ctrl+Alt+3".to_string(),
+            accelerator: "Ctrl+Shift+S".to_string(),
         },
     ]
 }
@@ -437,10 +472,7 @@ fn load_hotkey_settings(app: &AppHandle) -> Result<Option<Vec<HotkeyBinding>>, S
         .map_err(|message| format!("Saved shortcut settings are invalid: {message}"))
 }
 
-fn save_hotkey_settings(
-    app: &AppHandle,
-    settings: &StoredHotkeySettings,
-) -> Result<(), String> {
+fn save_hotkey_settings(app: &AppHandle, settings: &StoredHotkeySettings) -> Result<(), String> {
     let path = hotkey_settings_path(app)?;
     let parent = path
         .parent()

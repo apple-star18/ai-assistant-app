@@ -15,6 +15,7 @@ pub fn run() {
         .manage(hotkeys::HotkeyStore::default())
         .setup(|app| {
             browser::setup(app)?;
+            automation::setup(app.handle());
             hotkeys::setup(app.handle());
             Ok(())
         })
@@ -38,6 +39,8 @@ pub fn run() {
             captions::captions_stop,
             captions::captions_submit_to_chatgpt,
             automation::automation_get_state,
+            automation::automation_get_preferences,
+            automation::automation_apply_preferences,
             automation::automation_shortcut_mode_1,
             automation::automation_shortcut_mode_2,
             automation::automation_shortcut_mode_3,

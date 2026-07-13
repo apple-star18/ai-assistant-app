@@ -14,8 +14,10 @@ The application is designed around a narrow native boundary: the ChatGPT web exp
 - Caption buffer management and caption cleanup
 - Caption submission into ChatGPT
 - Automation modes for caption submit, screenshot plus caption submit, and screenshot upload
+- Home resets automation and caption collection; Refresh preserves and restores prepared prompt text
+- Optional setting to combine an existing ChatGPT prompt with the next Mode 1 or Mode 2 caption batch
 - Primary-display screenshot capture using Win32 GDI
-- Global `Ctrl+Alt+1`, `Ctrl+Alt+2`, and `Ctrl+Alt+3` shortcuts
+- Global `Ctrl+Enter`, `Ctrl+Shift+Enter`, and `Ctrl+Shift+S` shortcuts
 - Typed frontend IPC wrappers for Tauri commands
 
 ## Architecture
@@ -141,9 +143,9 @@ The current bundle target is NSIS.
 4. Start Windows Live Captions from the toolbar.
 5. Confirm caption status updates when Live Captions emits text.
 6. Use `Submit Caption` and confirm cleaned caption text appears in ChatGPT input.
-7. Test `Ctrl+Alt+1` for caption submit.
-8. Test `Ctrl+Alt+2` for screenshot plus caption upload and submit.
-9. Test `Ctrl+Alt+3` for screenshot upload only.
+7. Test `Ctrl+Enter` for caption submit.
+8. Test `Ctrl+Shift+Enter` for screenshot plus caption upload and submit.
+9. Test `Ctrl+Shift+S` for screenshot upload only.
 10. Confirm temporary screenshot files do not accumulate after successful upload.
 
 ## Known Risks
