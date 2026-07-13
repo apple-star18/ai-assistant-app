@@ -6,17 +6,17 @@ const shortcutFields = [
   {
     action: 'shortcutMode1',
     label: 'Caption Submit',
-    defaultAccelerator: 'Ctrl+Alt+1',
+    defaultAccelerator: 'Ctrl+Enter',
   },
   {
     action: 'shortcutMode2',
     label: 'Capture + Caption',
-    defaultAccelerator: 'Ctrl+Alt+2',
+    defaultAccelerator: 'Ctrl+Shift+Enter',
   },
   {
     action: 'shortcutMode3',
     label: 'Capture Only',
-    defaultAccelerator: 'Ctrl+Alt+3',
+    defaultAccelerator: 'Ctrl+Shift+S',
   },
 ];
 

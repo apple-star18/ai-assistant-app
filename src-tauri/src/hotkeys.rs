@@ -371,24 +371,24 @@ fn default_hotkeys() -> Vec<HotkeyBinding> {
     vec![
         HotkeyBinding {
             id: HOTKEY_MODE_1_ID,
-            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
-            vk: b'1' as u32,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            vk: 0x0D,
             action: HotkeyAction::Mode1,
-            accelerator: "Ctrl+Alt+1".to_string(),
+            accelerator: "Ctrl+Enter".to_string(),
         },
         HotkeyBinding {
             id: HOTKEY_MODE_2_ID,
-            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
-            vk: b'2' as u32,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_SHIFT.0),
+            vk: 0x0D,
             action: HotkeyAction::Mode2,
-            accelerator: "Ctrl+Alt+2".to_string(),
+            accelerator: "Ctrl+Shift+Enter".to_string(),
         },
         HotkeyBinding {
             id: HOTKEY_MODE_3_ID,
-            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_ALT.0),
-            vk: b'3' as u32,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0 | MOD_SHIFT.0),
+            vk: b'S' as u32,
             action: HotkeyAction::Mode3,
-            accelerator: "Ctrl+Alt+3".to_string(),
+            accelerator: "Ctrl+Shift+S".to_string(),
         },
     ]
 }
