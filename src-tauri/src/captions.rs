@@ -173,6 +173,33 @@ pub fn captions_stop(
     Ok(state.snapshot()?.clone())
 }
 
+pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<CaptionStore>();
+    let monitor = state
+        .monitor
+        .lock()
+        .map_err(|_| "Caption monitor state is unavailable.".to_string())?
+        .take();
+
+    if let Some(monitor) = monitor {
+        monitor.stop_requested.store(true, Ordering::Release);
+        // Let the monitor observe cancellation and release its UI Automation objects. Because
+        // it was removed from the store first, a late exit cannot overwrite the reset snapshot.
+        thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
+    }
+
+    let next_snapshot = {
+        let mut snapshot = state
+            .snapshot
+            .lock()
+            .map_err(|_| "Caption state is unavailable.".to_string())?;
+        *snapshot = CaptionSnapshot::default();
+        snapshot.clone()
+    };
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, CAPTION_EVENT, next_snapshot);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn captions_submit_to_chatgpt(
     app: AppHandle,
@@ -318,7 +345,12 @@ fn run_uia_monitor(app: &AppHandle, stop_requested: &AtomicBool) -> Result<(), S
             return Ok(());
         }
 
-        match capture_caption_text(&automation) {
+        let capture_result = capture_caption_text(&automation);
+        if stop_requested.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        match capture_result {
             Ok(Some(capture)) => {
                 update_snapshot(app, |snapshot| {
                     snapshot.window_found = true;

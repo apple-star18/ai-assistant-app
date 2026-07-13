@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED,
 };
 
-use crate::screenshot::CaptureMask;
+use crate::{automation, captions, screenshot::CaptureMask};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
@@ -182,6 +182,9 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 snapshot.is_loading = is_loading;
                 snapshot.last_error = None;
             });
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                automation::restore_retained_prompt_after_page_load(&app_handle);
+            }
             resize_browser_to_window(&resize_app_handle);
         }
     })
@@ -262,6 +265,9 @@ pub fn browser_open_home(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
+    automation::reset_for_home(&app).map_err(BrowserCommandError::automation)?;
+    captions::reset_for_home(&app).map_err(BrowserCommandError::automation)?;
+    let _ = clear_chatgpt_composer(&app, Duration::from_secs(3));
     navigate_to(&app, &state, CHATGPT_HOME_URL)
 }
 
@@ -279,6 +285,7 @@ pub fn browser_reload(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
+    automation::prepare_for_refresh(&app).map_err(BrowserCommandError::automation)?;
     let browser = app.browser_webview()?;
     browser.reload().map_err(BrowserCommandError::from_tauri)?;
 
@@ -497,7 +504,9 @@ pub fn browser_set_settings_overlay(
             "window.setSettingsIndicatorLeft && window.setSettingsIndicatorLeft({indicator_left}); window.refreshSettings && window.refreshSettings();"
         ))
         .map_err(BrowserCommandError::from_tauri)?;
-    overlay.set_focus().map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_focus()
+        .map_err(BrowserCommandError::from_tauri)?;
 
     Ok(())
 }
@@ -940,10 +949,52 @@ impl BrowserCommandError {
             message: error.to_string(),
         }
     }
+
+    fn automation(message: String) -> Self {
+        Self {
+            code: "automation_reset_failed",
+            message,
+        }
+    }
 }
 
 pub fn copy_text_to_chatgpt_input(app: &AppHandle, text: &str) -> Result<(), String> {
     insert_text_to_chatgpt_input(app, text)
+}
+
+pub fn read_chatgpt_prompt_text(app: &AppHandle) -> Result<String, String> {
+    let result = eval_json(
+        app,
+        r#"
+(() => {
+  const input = document.querySelector('#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+
+  if (!input) {
+    return { ok: false, reason: 'input_not_found' };
+  }
+
+  const text = input instanceof HTMLTextAreaElement ? input.value : (input.innerText || input.textContent || '');
+  return { ok: true, text };
+})();
+"#,
+    )?;
+
+    if result.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(result
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string())
+    } else {
+        Err(format!(
+            "ChatGPT prompt was not available: {}",
+            result
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ))
+    }
 }
 
 pub fn upload_screenshot_to_chatgpt_input(
@@ -1005,9 +1056,20 @@ pub fn upload_screenshot_to_chatgpt_input(
 }
 
 pub fn wait_for_chatgpt_upload(app: &AppHandle, timeout: Duration) -> Result<(), String> {
+    wait_for_chatgpt_upload_cancellable(app, timeout, || false)
+}
+
+pub fn wait_for_chatgpt_upload_cancellable(
+    app: &AppHandle,
+    timeout: Duration,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<(), String> {
     let started_at = std::time::Instant::now();
 
     while started_at.elapsed() < timeout {
+        if is_cancelled() {
+            return Err(automation::cancelled_error());
+        }
         let state = chatgpt_upload_state(app)?;
         let is_uploading = state
             .get("isUploading")
@@ -1322,7 +1384,11 @@ fn insert_text_to_chatgpt_input(app: &AppHandle, text: &str) -> Result<(), Strin
     }
 }
 
-pub fn wait_and_submit_chatgpt_input(app: &AppHandle, timeout: Duration) -> Result<(), String> {
+pub fn wait_and_submit_chatgpt_input_cancellable(
+    app: &AppHandle,
+    timeout: Duration,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<(), String> {
     if app.get_webview(BROWSER_WEBVIEW_LABEL).is_none() {
         return Err("Browser WebView is not available.".to_string());
     }
@@ -1331,6 +1397,9 @@ pub fn wait_and_submit_chatgpt_input(app: &AppHandle, timeout: Duration) -> Resu
     let mut last_reason = "send_button_not_found".to_string();
 
     while started_at.elapsed() < timeout {
+        if is_cancelled() {
+            return Err(automation::cancelled_error());
+        }
         let result = eval_json(
             app,
             r#"

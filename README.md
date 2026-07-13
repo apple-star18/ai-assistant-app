@@ -14,6 +14,8 @@ The application is designed around a narrow native boundary: the ChatGPT web exp
 - Caption buffer management and caption cleanup
 - Caption submission into ChatGPT
 - Automation modes for caption submit, screenshot plus caption submit, and screenshot upload
+- Home resets automation and caption collection; Refresh preserves and restores prepared prompt text
+- Optional setting to combine an existing ChatGPT prompt with the next Mode 1 or Mode 2 caption batch
 - Primary-display screenshot capture using Win32 GDI
 - Global `Ctrl+Enter`, `Ctrl+Shift+Enter`, and `Ctrl+Shift+S` shortcuts
 - Typed frontend IPC wrappers for Tauri commands

@@ -472,10 +472,7 @@ fn load_hotkey_settings(app: &AppHandle) -> Result<Option<Vec<HotkeyBinding>>, S
         .map_err(|message| format!("Saved shortcut settings are invalid: {message}"))
 }
 
-fn save_hotkey_settings(
-    app: &AppHandle,
-    settings: &StoredHotkeySettings,
-) -> Result<(), String> {
+fn save_hotkey_settings(app: &AppHandle, settings: &StoredHotkeySettings) -> Result<(), String> {
     let path = hotkey_settings_path(app)?;
     let parent = path
         .parent()
