@@ -1080,6 +1080,97 @@ pub fn discard_chatgpt_attachments(app: &AppHandle, timeout: Duration) -> Result
     Err("Timed out removing the failed ChatGPT image attachment.".to_string())
 }
 
+pub fn clear_chatgpt_composer(app: &AppHandle, timeout: Duration) -> Result<(), String> {
+    let started_at = std::time::Instant::now();
+
+    while started_at.elapsed() < timeout {
+        let result = eval_json(
+            app,
+            r#"
+(() => {
+  const prompt = document.querySelector('#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+
+  if (!prompt) {
+    return { ok: false, reason: 'input_not_found' };
+  }
+
+  const composer = prompt.closest('form') || document;
+  const removeSelectors = [
+    'button[aria-label*="remove file" i]',
+    'button[aria-label*="remove attachment" i]',
+    'button[aria-label*="remove image" i]',
+    'button[data-testid*="remove"][data-testid*="attachment"]',
+    'button[data-testid*="remove"][data-testid*="file"]',
+    'button[data-testid*="remove"][data-testid*="image"]'
+  ];
+  const attachmentSelectors = [
+    '[data-testid="composer-file-preview"]',
+    '[data-testid*="attachment"]',
+    '[data-testid*="file-preview"]',
+    '[data-testid*="image-preview"]',
+    'img[src^="blob:"]'
+  ];
+  const removeButtons = [...new Set(removeSelectors.flatMap((selector) => Array.from(composer.querySelectorAll(selector))))];
+
+  removeButtons.forEach((button) => button.click());
+  prompt.focus();
+
+  if (prompt instanceof HTMLTextAreaElement) {
+    prompt.value = '';
+    prompt.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+    prompt.dispatchEvent(new Event('change', { bubbles: true }));
+  } else if (prompt.isContentEditable) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(prompt);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand('delete', false);
+    prompt.textContent = '';
+    prompt.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+  }
+
+  const attachments = [...new Set(attachmentSelectors.flatMap((selector) => Array.from(composer.querySelectorAll(selector))))];
+  const promptText = prompt instanceof HTMLTextAreaElement ? prompt.value : (prompt.textContent || '');
+
+  return {
+    ok: true,
+    attachmentCount: attachments.length,
+    hasText: promptText.trim().length > 0
+  };
+})();
+"#,
+        )?;
+
+        if result.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(format!(
+                "ChatGPT composer was not available: {}",
+                result
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            ));
+        }
+
+        let attachment_count = result
+            .get("attachmentCount")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let has_text = result
+            .get("hasText")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        if attachment_count == 0 && !has_text {
+            return Ok(());
+        }
+
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    Err("Timed out clearing the ChatGPT composer.".to_string())
+}
+
 pub fn submit_chatgpt_when_upload_ready(app: &AppHandle) -> Result<(), String> {
     wait_for_chatgpt_upload(app, Duration::from_secs(45))?;
     submit_chatgpt_input(app)
@@ -1281,6 +1372,36 @@ pub fn wait_and_submit_chatgpt_input(app: &AppHandle, timeout: Duration) -> Resu
     Err(format!(
         "Timed out waiting for the ChatGPT send button to become enabled: {last_reason}"
     ))
+}
+
+pub fn submit_chatgpt_input_if_ready(app: &AppHandle) -> Result<bool, String> {
+    if app.get_webview(BROWSER_WEBVIEW_LABEL).is_none() {
+        return Err("Browser WebView is not available.".to_string());
+    }
+
+    let result = eval_json(
+        app,
+        r#"
+(() => {
+  const selectors = [
+    'button[data-testid="send-button"]',
+    'button[aria-label="Send prompt"]',
+    'button[aria-label="Send message"]',
+    'form button[type="submit"]'
+  ];
+  const button = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
+
+  if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') {
+    return { submitted: false };
+  }
+
+  button.click();
+  return { submitted: true };
+})();
+"#,
+    )?;
+
+    Ok(result.get("submitted").and_then(Value::as_bool) == Some(true))
 }
 
 fn eval_json(app: &AppHandle, script: impl Into<String>) -> Result<Value, String> {

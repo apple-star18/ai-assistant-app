@@ -275,8 +275,18 @@ fn dispatch_hotkey(app: AppHandle, action: HotkeyAction) {
             });
         }
         HotkeyAction::Mode3 => {
+            let permit = match automation::start_mode_3_job(&app) {
+                Ok(permit) => permit,
+                Err(message) => {
+                    update_snapshot(&app, |snapshot| {
+                        snapshot.last_error = Some(message);
+                    });
+                    return;
+                }
+            };
+
             thread::spawn(move || {
-                let result = automation::run_mode_3(&app);
+                let result = automation::run_mode_3_reserved(&app, permit);
                 report_hotkey_result(&app, result);
             });
         }

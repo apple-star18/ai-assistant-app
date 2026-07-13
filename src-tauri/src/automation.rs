@@ -19,6 +19,7 @@ const CAPTION_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CHATGPT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 const CHATGPT_SUBMIT_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTACHMENT_DISCARD_TIMEOUT: Duration = Duration::from_secs(3);
+const MODE_3_COORDINATOR_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,10 +69,29 @@ pub struct AutomationCommandError {
 pub struct AutomationStore {
     snapshot: Mutex<AutomationSnapshot>,
     caption_workflow_reserved: Arc<AtomicBool>,
+    mode_3_coordinator: Arc<Mode3Coordinator>,
 }
 
 pub(crate) struct CaptionWorkflowPermit {
     reserved: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct Mode3Coordinator {
+    state: Mutex<Mode3CoordinatorState>,
+}
+
+#[derive(Debug, Default)]
+struct Mode3CoordinatorState {
+    active_jobs: usize,
+    generation: u64,
+    finalizing: bool,
+    successful_injections: usize,
+    upload_errors: Vec<String>,
+}
+
+pub(crate) struct Mode3JobPermit {
+    coordinator: Arc<Mode3Coordinator>,
 }
 
 impl Drop for CaptionWorkflowPermit {
@@ -327,22 +347,286 @@ fn try_reserve_caption_workflow_flag(reserved: &Arc<AtomicBool>) -> Option<Capti
 }
 
 pub fn run_mode_3(app: &AppHandle) -> Result<(), String> {
-    let automation = app.state::<AutomationStore>();
+    let permit = start_mode_3_job(app)?;
+    run_mode_3_reserved(app, permit)
+}
 
-    run_workflow(&app, &automation, AutomationMode::ScreenshotOnly, || {
-        let masks = browser::protected_content_capture_mask(&app)
+pub(crate) fn start_mode_3_job(app: &AppHandle) -> Result<Mode3JobPermit, String> {
+    let coordinator = Arc::clone(&app.state::<AutomationStore>().mode_3_coordinator);
+    let mut state = coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+
+    state.active_jobs += 1;
+    state.generation = state.generation.wrapping_add(1);
+    drop(state);
+
+    update_snapshot(app, |snapshot| {
+        snapshot.is_running = true;
+        snapshot.last_mode = Some(AutomationMode::ScreenshotOnly);
+        snapshot.upload_state = UploadState::Uploading;
+        snapshot.last_error = None;
+    });
+
+    Ok(Mode3JobPermit { coordinator })
+}
+
+pub(crate) fn run_mode_3_reserved(app: &AppHandle, permit: Mode3JobPermit) -> Result<(), String> {
+    let upload_result = (|| {
+        let masks = browser::protected_content_capture_mask(app)
             .into_iter()
             .collect::<Vec<_>>();
         let screenshot = screenshot::capture_primary_display_png(&masks)?;
-        browser::upload_screenshot_to_chatgpt_input(
-            &app,
-            &screenshot.file_name,
-            &screenshot.bytes,
-        )?;
-        Ok(UploadState::Uploading)
+        browser::upload_screenshot_to_chatgpt_input(app, &screenshot.file_name, &screenshot.bytes)?;
+        drop(screenshot);
+        Ok::<(), String>(())
+    })();
+
+    let should_finalize = finish_mode_3_job(&permit, upload_result);
+
+    if should_finalize? {
+        finalize_mode_3_batch(app, &permit.coordinator)
+    } else {
+        Ok(())
+    }
+}
+
+fn finish_mode_3_job(
+    permit: &Mode3JobPermit,
+    upload_result: Result<(), String>,
+) -> Result<bool, String> {
+    let mut state = permit
+        .coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+
+    state.active_jobs = state.active_jobs.saturating_sub(1);
+    match upload_result {
+        Ok(()) => state.successful_injections += 1,
+        Err(error) => state.upload_errors.push(error),
+    }
+
+    if state.active_jobs == 0 && !state.finalizing {
+        state.finalizing = true;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn finalize_mode_3_batch(
+    app: &AppHandle,
+    coordinator: &Arc<Mode3Coordinator>,
+) -> Result<(), String> {
+    loop {
+        let (generation, successful_injections) = loop {
+            let state = coordinator
+                .state
+                .lock()
+                .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+
+            if state.active_jobs == 0 {
+                break (state.generation, state.successful_injections);
+            }
+
+            drop(state);
+            thread::sleep(MODE_3_COORDINATOR_POLL_INTERVAL);
+        };
+
+        if successful_injections == 0 {
+            return fail_mode_3_batch_without_submission(
+                app,
+                coordinator,
+                "Mode 3 could not add any screenshots to the ChatGPT composer.".to_string(),
+            );
+        }
+
+        // This readiness check covers every screenshot currently in the shared composer.
+        // A timeout is intentionally non-fatal: ChatGPT may have discarded only the failed
+        // files while leaving successful attachments ready for submission.
+        let upload_readiness = browser::wait_for_chatgpt_upload(app, CHATGPT_UPLOAD_TIMEOUT);
+
+        if mode_3_batch_changed(coordinator, generation)? {
+            continue;
+        }
+
+        match wait_and_submit_stable_mode_3_batch(app, coordinator, generation)? {
+            Mode3SubmitOutcome::Submitted(mut warnings) => {
+                if let Err(error) = upload_readiness {
+                    warnings.push(error);
+                }
+                let warnings = format_mode_3_warnings(warnings);
+                complete_mode_3_batch(app, coordinator, warnings)?;
+                return Ok(());
+            }
+            Mode3SubmitOutcome::BatchChanged => continue,
+            Mode3SubmitOutcome::TimedOut(error) => {
+                return fail_and_clear_mode_3_batch(
+                    app,
+                    coordinator,
+                    format!("Mode 3 submission did not succeed after one retry: {error}"),
+                );
+            }
+        }
+    }
+}
+
+enum Mode3SubmitOutcome {
+    Submitted(Vec<String>),
+    BatchChanged,
+    TimedOut(String),
+}
+
+fn wait_and_submit_stable_mode_3_batch(
+    app: &AppHandle,
+    coordinator: &Arc<Mode3Coordinator>,
+    generation: u64,
+) -> Result<Mode3SubmitOutcome, String> {
+    let started_at = std::time::Instant::now();
+    let mut last_error = "The ChatGPT send button remained disabled.".to_string();
+
+    while started_at.elapsed() < CHATGPT_SUBMIT_TIMEOUT {
+        let mut state = coordinator
+            .state
+            .lock()
+            .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+
+        if state.active_jobs != 0 || state.generation != generation {
+            return Ok(Mode3SubmitOutcome::BatchChanged);
+        }
+
+        match browser::submit_chatgpt_input_if_ready(app) {
+            Ok(true) => {
+                let warnings = state.upload_errors.clone();
+                reset_mode_3_state(&mut state);
+                return Ok(Mode3SubmitOutcome::Submitted(warnings));
+            }
+            Ok(false) => {
+                last_error = "The ChatGPT send button remained disabled.".to_string();
+            }
+            Err(error) => last_error = error,
+        }
+
+        drop(state);
+        thread::sleep(Duration::from_millis(500));
+    }
+
+    // One final immediate retry is allowed after the 30-second wait expires.
+    let mut state = coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+    if state.active_jobs != 0 || state.generation != generation {
+        return Ok(Mode3SubmitOutcome::BatchChanged);
+    }
+
+    match browser::submit_chatgpt_input_if_ready(app) {
+        Ok(true) => {
+            let warnings = state.upload_errors.clone();
+            reset_mode_3_state(&mut state);
+            Ok(Mode3SubmitOutcome::Submitted(warnings))
+        }
+        Ok(false) => Ok(Mode3SubmitOutcome::TimedOut(last_error)),
+        Err(error) => Ok(Mode3SubmitOutcome::TimedOut(error)),
+    }
+}
+
+fn mode_3_batch_changed(
+    coordinator: &Arc<Mode3Coordinator>,
+    generation: u64,
+) -> Result<bool, String> {
+    let state = coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+    Ok(state.active_jobs != 0 || state.generation != generation)
+}
+
+fn format_mode_3_warnings(warnings: Vec<String>) -> Option<String> {
+    (!warnings.is_empty()).then(|| {
+        format!(
+            "Mode 3 submitted the available screenshots and ignored upload failures: {}",
+            warnings.join("; ")
+        )
     })
-    .map(|_| ())
-    .map_err(|error| error.message)
+}
+
+fn complete_mode_3_batch(
+    app: &AppHandle,
+    coordinator: &Arc<Mode3Coordinator>,
+    warnings: Option<String>,
+) -> Result<(), String> {
+    // The state was already reset atomically with the Send click. Only publish the result here.
+    let state = coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+    let has_next_batch = state.active_jobs > 0 || state.finalizing;
+
+    update_snapshot(app, |snapshot| {
+        snapshot.is_running = has_next_batch;
+        snapshot.upload_state = UploadState::Ready;
+        snapshot.last_error = warnings;
+    });
+    drop(state);
+    Ok(())
+}
+
+fn fail_mode_3_batch_without_submission(
+    app: &AppHandle,
+    coordinator: &Arc<Mode3Coordinator>,
+    message: String,
+) -> Result<(), String> {
+    let mut state = coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+    reset_mode_3_state(&mut state);
+
+    update_snapshot(app, |snapshot| {
+        snapshot.is_running = false;
+        snapshot.upload_state = UploadState::Failed;
+        snapshot.last_error = Some(message.clone());
+    });
+    drop(state);
+    Err(message)
+}
+
+fn fail_and_clear_mode_3_batch(
+    app: &AppHandle,
+    coordinator: &Arc<Mode3Coordinator>,
+    error: String,
+) -> Result<(), String> {
+    let mut state = coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+
+    let clear_result = browser::clear_chatgpt_composer(app, ATTACHMENT_DISCARD_TIMEOUT);
+    reset_mode_3_state(&mut state);
+
+    let message = match clear_result {
+        Ok(()) => format!("{error} The ChatGPT composer was cleared."),
+        Err(clear_error) => {
+            format!("{error} The ChatGPT composer could not be completely cleared: {clear_error}")
+        }
+    };
+
+    update_snapshot(app, |snapshot| {
+        snapshot.is_running = false;
+        snapshot.upload_state = UploadState::Failed;
+        snapshot.last_error = Some(message.clone());
+    });
+    drop(state);
+    Err(message)
+}
+
+fn reset_mode_3_state(state: &mut Mode3CoordinatorState) {
+    state.finalizing = false;
+    state.successful_injections = 0;
+    state.upload_errors.clear();
 }
 
 pub fn submit_after_upload(app: &AppHandle) -> Result<(), String> {
@@ -435,7 +719,10 @@ mod tests {
         time::Duration,
     };
 
-    use super::{submit_caption_when_ready, try_reserve_caption_workflow_flag};
+    use super::{
+        finish_mode_3_job, submit_caption_when_ready, try_reserve_caption_workflow_flag,
+        Mode3Coordinator, Mode3JobPermit,
+    };
 
     #[test]
     fn caption_input_retries_twice_then_waits_for_submit() {
@@ -493,5 +780,30 @@ mod tests {
         assert!(try_reserve_caption_workflow_flag(&reserved).is_none());
         drop(first);
         assert!(try_reserve_caption_workflow_flag(&reserved).is_some());
+    }
+
+    #[test]
+    fn last_mode_3_job_becomes_the_only_batch_finalizer() {
+        let coordinator = Arc::new(Mode3Coordinator::default());
+        {
+            let mut state = coordinator.state.lock().expect("coordinator state");
+            state.active_jobs = 2;
+            state.generation = 2;
+        }
+        let first = Mode3JobPermit {
+            coordinator: Arc::clone(&coordinator),
+        };
+        let second = Mode3JobPermit {
+            coordinator: Arc::clone(&coordinator),
+        };
+
+        assert!(!finish_mode_3_job(&first, Err("capture failed".to_string())).unwrap());
+        assert!(finish_mode_3_job(&second, Ok(())).unwrap());
+
+        let state = coordinator.state.lock().expect("coordinator state");
+        assert_eq!(state.active_jobs, 0);
+        assert_eq!(state.successful_injections, 1);
+        assert_eq!(state.upload_errors, vec!["capture failed"]);
+        assert!(state.finalizing);
     }
 }
