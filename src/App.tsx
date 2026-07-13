@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   applyHotkeySettings,
@@ -18,7 +18,7 @@ import {
   reloadBrowser,
   resizeBrowser,
   setBrowserContentProtected,
-  setBrowserWindowOpacity,
+  setBrowserTransparencyOverlay,
   startCaptions,
   stopCaptions,
   submitCaptionsToChatGpt,
@@ -104,6 +104,8 @@ const initialHotkeyState: HotkeyState = {
 const DEBUG_LOG_PREFIX = '[ai-assistant-browser]';
 const TRANSPARENCY_CONTROL_WIDTH = 220;
 const TRANSPARENCY_CONTROL_MARGIN = 8;
+const TRANSPARENCY_OVERLAY_TOP = 46;
+const TRANSPARENCY_OVERLAY_HEIGHT = 43;
 
 export function App() {
   return <BrowserWindow />;
@@ -212,6 +214,20 @@ function BrowserWindow() {
     }
   }, [hotkeyState, isSettingsOpen]);
 
+  const getReservedTopHeight = useCallback(() => {
+    if (!toolbarRef.current) {
+      return 0;
+    }
+
+    const reservedTopHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+
+    logDebug('resize:reserved-top-height', {
+      reservedTopHeight,
+    });
+
+    return reservedTopHeight;
+  }, []);
+
   useEffect(() => {
     if (!isTransparencyOpen) {
       return;
@@ -221,10 +237,7 @@ function BrowserWindow() {
       updateTransparencyControlPosition();
       logElementMetrics('transparency:top-layer-metrics', '.browser-top-layer');
       logElementMetrics('transparency:button-metrics', '#transparency-button');
-      logElementMetrics('transparency:popover-row-metrics', '.transparency-popover-row');
-      logElementMetrics('transparency:control-metrics', '#transparency-controls');
-      logElementMetrics('transparency:range-metrics', '#transparency-opacity-range');
-      void sendBrowserDebugLayout('transparency:metrics');
+      void sendBrowserDebugLayout('transparency:metrics', true);
     };
 
     logTransparencyMetrics();
@@ -261,11 +274,10 @@ function BrowserWindow() {
           return;
         }
 
-        const toolbarHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+        const toolbarHeight = getReservedTopHeight();
         logDebug('resize:measured-top-layer', {
           toolbarHeight,
           isSettingsOpen,
-          isTransparencyOpen,
         });
 
         void resizeBrowser(toolbarHeight)
@@ -331,7 +343,23 @@ function BrowserWindow() {
         window.cancelAnimationFrame(animationFrame);
       }
     };
-  }, [isSettingsOpen, isTransparencyOpen]);
+  }, [getReservedTopHeight, isSettingsOpen]);
+
+  useEffect(() => {
+    const opacityPercent = Math.round(browserState.windowOpacity * 100);
+
+    void setBrowserTransparencyOverlay({
+      isOpen: isTransparencyOpen,
+      left: transparencyControlLeft,
+      top: TRANSPARENCY_OVERLAY_TOP,
+      width: TRANSPARENCY_CONTROL_WIDTH,
+      height: TRANSPARENCY_OVERLAY_HEIGHT,
+      opacityPercent,
+    }).catch((error: unknown) => {
+      logDebug('transparency:overlay-failed', { error: getErrorMessage(error) });
+      setCommandError(getErrorMessage(error));
+    });
+  }, [browserState.windowOpacity, isTransparencyOpen, transparencyControlLeft]);
 
   const statusText = useMemo(() => {
     if (browserState.isLoading) {
@@ -430,37 +458,18 @@ function BrowserWindow() {
   }
 
   function toggleTransparencyControls() {
-    setIsTransparencyOpen((isOpen) => {
-      const nextIsOpen = !isOpen;
-      logDebug('transparency:toggle', {
-        isOpen: nextIsOpen,
-        zIndex: getTopLayerZIndex(),
-      });
-      return nextIsOpen;
-    });
-    scheduleBrowserResizeFromTopLayer();
-  }
+    const nextIsOpen = !isTransparencyOpen;
 
-  async function updateWindowOpacity(opacityPercent: number) {
-    const opacity = opacityPercent / 100;
-    setCommandError(null);
-    logDebug('transparency:opacity-requested', { opacityPercent, opacity });
-    setBrowserState((current) => ({
-      ...current,
-      windowOpacity: opacity,
-    }));
-
-    try {
-      const nextState = await setBrowserWindowOpacity(opacity);
-      logDebug('transparency:opacity-applied', {
-        opacityPercent: Math.round(nextState.windowOpacity * 100),
-        opacity: nextState.windowOpacity,
-      });
-      setBrowserState(nextState);
-    } catch (error) {
-      logDebug('transparency:opacity-failed', { error: getErrorMessage(error) });
-      setCommandError(getErrorMessage(error));
+    if (nextIsOpen) {
+      updateTransparencyControlPosition();
     }
+
+    logDebug('transparency:toggle', {
+      isOpen: nextIsOpen,
+      zIndex: getTopLayerZIndex(),
+    });
+
+    setIsTransparencyOpen(nextIsOpen);
   }
 
   function openSettings() {
@@ -480,13 +489,13 @@ function BrowserWindow() {
       window.requestAnimationFrame(() => {
         if (toolbarRef.current) {
           updateTransparencyControlPosition();
-          const topHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+          const topHeight = getReservedTopHeight();
           logDebug('resize:scheduled-top-layer', {
             topHeight,
             isSettingsOpen,
             isTransparencyOpen,
           });
-          void sendBrowserDebugLayout('resize:scheduled-top-layer');
+          void sendBrowserDebugLayout('resize:scheduled-top-layer', isTransparencyOpen);
           void resizeBrowserToTopHeight(topHeight);
         }
       });
@@ -558,8 +567,6 @@ function BrowserWindow() {
     setTransparencyControlLeft(nextLeft);
   }
 
-  const opacityPercent = Math.round(browserState.windowOpacity * 100);
-
   return (
     <main className="browser-shell" aria-label="ChatGPT browser">
       <div ref={toolbarRef} className="browser-top-layer">
@@ -626,7 +633,6 @@ function BrowserWindow() {
             type="button"
             title="Transparency"
             aria-expanded={isTransparencyOpen}
-            aria-controls="transparency-controls"
             onClick={toggleTransparencyControls}
           >
             <TransparencyIcon />
@@ -674,29 +680,6 @@ function BrowserWindow() {
             <span>{statusMessage}</span>
           </div>
         </form>
-
-        {isTransparencyOpen ? (
-          <div className="transparency-popover-row">
-            <label
-              id="transparency-controls"
-              className="transparency-popover-control"
-              style={{ left: `${transparencyControlLeft}px` }}
-              aria-label="Transparency controls"
-            >
-              <span>Opacity</span>
-              <input
-                id="transparency-opacity-range"
-                type="range"
-                min="40"
-                max="100"
-                step="5"
-                value={opacityPercent}
-                onChange={(event) => void updateWindowOpacity(Number(event.currentTarget.value))}
-              />
-              <output>{opacityPercent}%</output>
-            </label>
-          </div>
-        ) : null}
 
         {isSettingsOpen ? (
           <div className="settings-modal-region">
@@ -871,8 +854,8 @@ function logElementMetrics(event: string, selector: string) {
   });
 }
 
-async function sendBrowserDebugLayout(source: string) {
-  const request = buildBrowserDebugLayoutRequest(source);
+async function sendBrowserDebugLayout(source: string, isTransparencyOpen = false) {
+  const request = buildBrowserDebugLayoutRequest(source, isTransparencyOpen);
   logDebug('debug-layout:send', {
     source,
     topHeight: request.frontend.topHeight,
@@ -889,29 +872,28 @@ async function sendBrowserDebugLayout(source: string) {
   }
 }
 
-function buildBrowserDebugLayoutRequest(source: string): BrowserDebugLayoutRequest {
+function buildBrowserDebugLayoutRequest(
+  source: string,
+  isTransparencyOpen: boolean,
+): BrowserDebugLayoutRequest {
   const topLayer = document.querySelector('.browser-top-layer');
-  const transparencyControl = document.querySelector('#transparency-controls');
 
   return {
     source,
     frontend: {
-      isTransparencyOpen: Boolean(document.querySelector('#transparency-controls')),
+      isTransparencyOpen,
       topHeight:
         topLayer instanceof HTMLElement
           ? Math.ceil(topLayer.getBoundingClientRect().height)
           : null,
       topLayerRect: getDebugRect('.browser-top-layer'),
       transparencyButtonRect: getDebugRect('#transparency-button'),
-      transparencyRowRect: getDebugRect('.transparency-popover-row'),
+      transparencyRowRect: null,
       transparencyControlRect: getDebugRect('#transparency-controls'),
       transparencyRangeRect: getDebugRect('#transparency-opacity-range'),
       topLayerZIndex:
         topLayer instanceof HTMLElement ? window.getComputedStyle(topLayer).zIndex : 'unavailable',
-      transparencyControlZIndex:
-        transparencyControl instanceof HTMLElement
-          ? window.getComputedStyle(transparencyControl).zIndex
-          : 'unavailable',
+      transparencyControlZIndex: 'native-overlay',
     },
   };
 }

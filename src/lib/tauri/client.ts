@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import type {
   AutomationState,
   BrowserState,
+  BrowserTransparencyOverlayRequest,
   CaptionState,
   CommandMap,
   BrowserDebugLayoutRequest,
@@ -72,6 +73,12 @@ export function setBrowserContentProtected(isContentProtected: boolean) {
 export function setBrowserWindowOpacity(opacity: number) {
   return invokeCommand('browser_set_window_opacity', {
     request: { opacity },
+  });
+}
+
+export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverlayRequest) {
+  return invokeCommand('browser_set_transparency_overlay', {
+    request,
   });
 }
 

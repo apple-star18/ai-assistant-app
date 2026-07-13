@@ -9,7 +9,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{
-    webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder},
+    webview::{Color, DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder},
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
     Size, State, Url, WebviewUrl, Window, WindowEvent,
 };
@@ -23,6 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::screenshot::CaptureMask;
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
+const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
@@ -142,6 +143,17 @@ pub struct SetWindowOpacityRequest {
     opacity: f64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTransparencyOverlayRequest {
+    is_open: bool,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    opacity_percent: u8,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserCommandError {
@@ -203,6 +215,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .as_ref()
         .window()
         .add_child(browser, bounds.position, bounds.size)?;
+
+    let transparency_overlay = WebviewBuilder::new(
+        TRANSPARENCY_OVERLAY_WEBVIEW_LABEL,
+        WebviewUrl::App("transparency-overlay.html".into()),
+    )
+    .accept_first_mouse(true)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .focused(false);
+
+    let transparency_overlay = main_window.as_ref().window().add_child(
+        transparency_overlay,
+        LogicalPosition::new(0.0, 0.0),
+        LogicalSize::new(1.0, 1.0),
+    )?;
+    transparency_overlay.hide()?;
 
     main_window.on_window_event(move |event| match event {
         WindowEvent::Resized(size) => {
@@ -404,6 +432,56 @@ pub fn browser_set_window_opacity(
     });
 
     Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
+pub fn browser_set_transparency_overlay(
+    app: AppHandle,
+    request: SetTransparencyOverlayRequest,
+) -> CommandResult<()> {
+    let overlay = app
+        .get_webview(TRANSPARENCY_OVERLAY_WEBVIEW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "webview_unavailable",
+            message: "Transparency overlay WebView is not available.".to_string(),
+        })?;
+
+    if !request.is_open {
+        log_browser_debug(format_args!("transparency_overlay hide"));
+        overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        return Ok(());
+    }
+
+    validate_overlay_bounds(&request)?;
+    let opacity_percent = request.opacity_percent.clamp(40, 100);
+    let position = Position::Logical(LogicalPosition::new(
+        request.left.round(),
+        request.top.round(),
+    ));
+    let size = Size::Logical(LogicalSize::new(
+        request.width.round().max(1.0),
+        request.height.round().max(1.0),
+    ));
+
+    log_browser_debug(format_args!(
+        "transparency_overlay show left={} top={} width={} height={} opacity_percent={}",
+        request.left, request.top, request.width, request.height, opacity_percent
+    ));
+
+    overlay
+        .set_auto_resize(false)
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_bounds(Rect { position, size })
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay.show().map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .eval(format!(
+            "window.setOpacityPercent && window.setOpacityPercent({opacity_percent});"
+        ))
+        .map_err(BrowserCommandError::from_tauri)?;
+
+    Ok(())
 }
 
 fn apply_window_content_protection(
@@ -843,6 +921,26 @@ fn validate_window_opacity(opacity: f64) -> CommandResult<f64> {
     }
 
     Ok(opacity)
+}
+
+fn validate_overlay_bounds(request: &SetTransparencyOverlayRequest) -> CommandResult<()> {
+    if !request.left.is_finite()
+        || !request.top.is_finite()
+        || !request.width.is_finite()
+        || !request.height.is_finite()
+    {
+        return Err(BrowserCommandError::validation(
+            "Transparency overlay bounds must be finite numbers.",
+        ));
+    }
+
+    if request.width <= 0.0 || request.height <= 0.0 {
+        return Err(BrowserCommandError::validation(
+            "Transparency overlay size must be positive.",
+        ));
+    }
+
+    Ok(())
 }
 
 fn browser_profile_dir(app: &App) -> tauri::Result<PathBuf> {

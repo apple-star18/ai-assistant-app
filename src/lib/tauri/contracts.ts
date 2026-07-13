@@ -46,6 +46,15 @@ export interface BrowserDebugLayoutRequest {
   };
 }
 
+export interface BrowserTransparencyOverlayRequest {
+  isOpen: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  opacityPercent: number;
+}
+
 export interface CaptionState {
   isMonitoring: boolean;
   windowFound: boolean;
@@ -157,6 +166,12 @@ export interface CommandMap {
       };
     };
     response: BrowserState;
+  };
+  browser_set_transparency_overlay: {
+    args: {
+      request: BrowserTransparencyOverlayRequest;
+    };
+    response: undefined;
   };
   captions_get_state: {
     args: undefined;
