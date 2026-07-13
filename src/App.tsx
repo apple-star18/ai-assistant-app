@@ -378,11 +378,12 @@ function BrowserWindow() {
     }
   }
 
-  async function keepContentVisible() {
+  async function toggleContentProtection() {
+    const requestedContentProtected = !browserState.isContentProtected;
     setCommandError(null);
 
     try {
-      const nextState = await setBrowserContentProtected(false);
+      const nextState = await setBrowserContentProtected(requestedContentProtected);
       setBrowserState(nextState);
     } catch (error) {
       setCommandError(getErrorMessage(error));
@@ -496,13 +497,21 @@ function BrowserWindow() {
           </button>
 
           <button
-            className="protection-button"
+            className={
+              browserState.isContentProtected
+                ? 'protection-button protected'
+                : 'protection-button'
+            }
             type="button"
-            title="Content is visible to screen capture."
-            aria-pressed={false}
-            onClick={() => void keepContentVisible()}
+            title={
+              browserState.isContentProtected
+                ? 'Content is hidden from screen capture.'
+                : 'Content is visible to screen capture.'
+            }
+            aria-pressed={browserState.isContentProtected}
+            onClick={() => void toggleContentProtection()}
           >
-            Visible
+            {browserState.isContentProtected ? 'Protected' : 'Visible'}
           </button>
 
           <label className="address-bar">

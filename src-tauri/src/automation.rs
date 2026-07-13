@@ -131,7 +131,10 @@ pub fn run_mode_2(app: &AppHandle) -> Result<(), String> {
         AutomationMode::ScreenshotCaptionSubmit,
         || {
             let caption_text = captions::caption_text_for_submission(&captions)?;
-            let screenshot = screenshot::capture_primary_display_png()?;
+            let masks = browser::protected_content_capture_mask(&app)
+                .into_iter()
+                .collect::<Vec<_>>();
+            let screenshot = screenshot::capture_primary_display_png(&masks)?;
             browser::upload_screenshot_to_chatgpt_input(
                 &app,
                 &screenshot.file_name,
@@ -157,7 +160,10 @@ pub fn run_mode_3(app: &AppHandle) -> Result<(), String> {
     let automation = app.state::<AutomationStore>();
 
     run_workflow(&app, &automation, AutomationMode::ScreenshotOnly, || {
-        let screenshot = screenshot::capture_primary_display_png()?;
+        let masks = browser::protected_content_capture_mask(&app)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let screenshot = screenshot::capture_primary_display_png(&masks)?;
         browser::upload_screenshot_to_chatgpt_input(
             &app,
             &screenshot.file_name,

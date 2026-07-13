@@ -11,12 +11,14 @@ use serde_json::Value;
 use tauri::{
     webview::{DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder},
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
-    Size, State, Url, WebviewUrl, WebviewWindow, WindowEvent,
+    Size, State, Url, WebviewUrl, WebviewWindow, Window, WindowEvent,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
     WINDOW_DISPLAY_AFFINITY,
 };
+
+use crate::screenshot::CaptureMask;
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -176,7 +178,7 @@ pub fn browser_get_state(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
-    if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+    if let Some(main_window) = app.get_window(MAIN_WINDOW_LABEL) {
         if let Ok(is_content_protected) = read_window_content_protection(&main_window) {
             update_snapshot(&app, |snapshot| {
                 snapshot.is_content_protected = is_content_protected;
@@ -279,15 +281,18 @@ pub fn browser_set_content_protected(
     state: State<'_, BrowserStore>,
     request: SetContentProtectionRequest,
 ) -> CommandResult<BrowserSnapshot> {
-    let _requested_content_protection = request.is_content_protected;
-    let main_window =
-        app.get_webview_window(MAIN_WINDOW_LABEL)
-            .ok_or_else(|| BrowserCommandError {
+    let main_window = match app.get_window(MAIN_WINDOW_LABEL) {
+        Some(window) => window,
+        None => {
+            return Err(BrowserCommandError {
                 code: "window_unavailable",
                 message: "Main window is not available.".to_string(),
-            })?;
+            })
+        }
+    };
 
-    let is_content_protected = apply_window_content_protection(&main_window, false)?;
+    let is_content_protected =
+        apply_window_content_protection(&main_window, request.is_content_protected)?;
 
     update_snapshot(&app, |snapshot| {
         snapshot.is_content_protected = is_content_protected;
@@ -298,7 +303,7 @@ pub fn browser_set_content_protected(
 }
 
 fn apply_window_content_protection(
-    window: &WebviewWindow,
+    window: &Window,
     is_content_protected: bool,
 ) -> CommandResult<bool> {
     window
@@ -325,10 +330,14 @@ fn apply_window_content_protection(
         ),
     })?;
 
-    read_window_content_protection(window)
+    Ok(is_content_protected)
 }
 
-fn read_window_content_protection(window: &WebviewWindow) -> CommandResult<bool> {
+fn read_window_content_protection(window: &Window) -> CommandResult<bool> {
+    Ok(read_window_display_affinity(window)? != WDA_NONE)
+}
+
+fn read_window_display_affinity(window: &Window) -> CommandResult<WINDOW_DISPLAY_AFFINITY> {
     let hwnd = window.hwnd().map_err(BrowserCommandError::from_tauri)?;
     let mut affinity = WDA_NONE.0;
 
@@ -339,7 +348,45 @@ fn read_window_content_protection(window: &WebviewWindow) -> CommandResult<bool>
         }
     })?;
 
-    Ok(WINDOW_DISPLAY_AFFINITY(affinity) != WDA_NONE)
+    Ok(WINDOW_DISPLAY_AFFINITY(affinity))
+}
+
+pub fn protected_content_capture_mask(app: &AppHandle) -> Option<CaptureMask> {
+    let state = app.state::<BrowserStore>();
+    let is_content_protected = state
+        .snapshot
+        .lock()
+        .ok()
+        .map(|snapshot| snapshot.is_content_protected)?;
+
+    if !is_content_protected {
+        return None;
+    }
+
+    let toolbar_height = state
+        .layout
+        .lock()
+        .map(|layout| layout.toolbar_height)
+        .unwrap_or(TOOLBAR_HEIGHT);
+    let main_window = app.get_window(MAIN_WINDOW_LABEL)?;
+    let scale_factor = main_window.scale_factor().ok()?;
+    let inner_position = main_window.inner_position().ok()?;
+    let inner_size = main_window.inner_size().ok()?;
+    let toolbar_height = (toolbar_height * scale_factor).round() as i32;
+    let height = inner_size.height as i32 - toolbar_height;
+
+    if height <= 0 {
+        return None;
+    }
+
+    let mask = CaptureMask {
+        x: inner_position.x,
+        y: inner_position.y + toolbar_height,
+        width: inner_size.width as i32,
+        height,
+    };
+
+    Some(mask)
 }
 
 fn navigate_to(
