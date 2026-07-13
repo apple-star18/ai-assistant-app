@@ -57,8 +57,19 @@ export function resizeBrowser(toolbarHeight: number) {
 }
 
 export function setBrowserContentProtected(isContentProtected: boolean) {
+  console.info('[content-protection] invoke browser_set_content_protected', {
+    isContentProtected,
+  });
+
   return invokeCommand('browser_set_content_protected', {
     request: { isContentProtected },
+  }).then((state) => {
+    console.info('[content-protection] invoke browser_set_content_protected resolved', {
+      requested: isContentProtected,
+      actual: state.isContentProtected,
+      lastError: state.lastError,
+    });
+    return state;
   });
 }
 

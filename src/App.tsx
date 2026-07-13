@@ -123,6 +123,10 @@ function BrowserWindow() {
 
     void getBrowserState()
       .then((state) => {
+        console.info('[content-protection] initial browser state', {
+          isContentProtected: state.isContentProtected,
+          currentUrl: state.currentUrl,
+        });
         if (isMounted) {
           setBrowserState(state);
           setAddress(state.currentUrl);
@@ -163,6 +167,11 @@ function BrowserWindow() {
       });
 
     const unlisten = listenToBrowserState((state) => {
+      console.info('[content-protection] browser state event', {
+        isContentProtected: state.isContentProtected,
+        currentUrl: state.currentUrl,
+        lastError: state.lastError,
+      });
       setBrowserState(state);
       setAddress(state.currentUrl);
       setCommandError(null);
@@ -378,13 +387,23 @@ function BrowserWindow() {
     }
   }
 
-  async function keepContentVisible() {
+  async function toggleContentProtection() {
+    const requestedContentProtected = !browserState.isContentProtected;
     setCommandError(null);
+    console.info('[content-protection] toggle requested', {
+      current: browserState.isContentProtected,
+      requested: requestedContentProtected,
+    });
 
     try {
-      const nextState = await setBrowserContentProtected(false);
+      const nextState = await setBrowserContentProtected(requestedContentProtected);
+      console.info('[content-protection] toggle applied', {
+        requested: requestedContentProtected,
+        actual: nextState.isContentProtected,
+      });
       setBrowserState(nextState);
     } catch (error) {
+      console.error('[content-protection] toggle failed', error);
       setCommandError(getErrorMessage(error));
     }
   }
@@ -496,13 +515,21 @@ function BrowserWindow() {
           </button>
 
           <button
-            className="protection-button"
+            className={
+              browserState.isContentProtected
+                ? 'protection-button protected'
+                : 'protection-button'
+            }
             type="button"
-            title="Content is visible to screen capture."
-            aria-pressed={false}
-            onClick={() => void keepContentVisible()}
+            title={
+              browserState.isContentProtected
+                ? 'Content is hidden from screen capture.'
+                : 'Content is visible to screen capture.'
+            }
+            aria-pressed={browserState.isContentProtected}
+            onClick={() => void toggleContentProtection()}
           >
-            Visible
+            {browserState.isContentProtected ? 'Protected' : 'Visible'}
           </button>
 
           <label className="address-bar">

@@ -13,7 +13,15 @@ pub struct ScreenshotPng {
     pub bytes: Vec<u8>,
 }
 
-pub fn capture_primary_display_png() -> Result<ScreenshotPng, String> {
+#[derive(Debug, Clone, Copy)]
+pub struct CaptureMask {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+pub fn capture_primary_display_png(masks: &[CaptureMask]) -> Result<ScreenshotPng, String> {
     let width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
 
@@ -21,7 +29,12 @@ pub fn capture_primary_display_png() -> Result<ScreenshotPng, String> {
         return Err("Primary display dimensions are unavailable.".to_string());
     }
 
-    let capture = capture_bgra(width, height)?;
+    let mut capture = capture_bgra(width, height)?;
+
+    for mask in masks {
+        apply_mask(&mut capture, width, height, *mask);
+    }
+
     let png = encode_png(width as u32, height as u32, &capture)?;
 
     Ok(ScreenshotPng {
@@ -85,6 +98,33 @@ fn capture_bgra(width: i32, height: i32) -> Result<Vec<u8>, String> {
     }
 
     Ok(pixels)
+}
+
+fn apply_mask(bgra: &mut [u8], screen_width: i32, screen_height: i32, mask: CaptureMask) {
+    if mask.width <= 0 || mask.height <= 0 {
+        return;
+    }
+
+    let left = mask.x.clamp(0, screen_width);
+    let top = mask.y.clamp(0, screen_height);
+    let right = (mask.x + mask.width).clamp(0, screen_width);
+    let bottom = (mask.y + mask.height).clamp(0, screen_height);
+
+    if left >= right || top >= bottom {
+        return;
+    }
+
+    for y in top..bottom {
+        let row_start = y as usize * screen_width as usize * 4;
+
+        for x in left..right {
+            let offset = row_start + x as usize * 4;
+            bgra[offset] = 0;
+            bgra[offset + 1] = 0;
+            bgra[offset + 2] = 0;
+            bgra[offset + 3] = 255;
+        }
+    }
 }
 
 fn encode_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
