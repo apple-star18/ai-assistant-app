@@ -103,15 +103,13 @@ pub fn captions_start(
     app: AppHandle,
     state: State<'_, CaptionStore>,
 ) -> CommandResult<CaptionSnapshot> {
-    {
-        let monitor = state.monitor.lock().map_err(|_| CaptionCommandError {
-            code: "state_unavailable",
-            message: "Caption monitor state is unavailable.".to_string(),
-        })?;
+    let mut monitor = state.monitor.lock().map_err(|_| CaptionCommandError {
+        code: "state_unavailable",
+        message: "Caption monitor state is unavailable.".to_string(),
+    })?;
 
-        if monitor.is_some() {
-            return Ok(state.snapshot()?.clone());
-        }
+    if monitor.is_some() {
+        return Ok(state.snapshot()?.clone());
     }
 
     launch_live_captions().map_err(|message| CaptionCommandError {
@@ -128,20 +126,26 @@ pub fn captions_start(
     let stop_requested = Arc::new(AtomicBool::new(false));
     let worker_stop = Arc::clone(&stop_requested);
     let worker_app = app.clone();
+    *monitor = Some(CaptionMonitor { stop_requested });
 
-    thread::Builder::new()
+    if let Err(error) = thread::Builder::new()
         .name("live-captions-uia-monitor".to_string())
         .spawn(move || monitor_live_captions(worker_app, worker_stop))
-        .map_err(|error| CaptionCommandError {
-            code: "monitor_start_failed",
-            message: error.to_string(),
-        })?;
+    {
+        let message = error.to_string();
+        monitor.take();
+        update_snapshot(&app, |snapshot| {
+            snapshot.is_monitoring = false;
+            snapshot.last_error = Some(message.clone());
+        });
 
-    let mut monitor = state.monitor.lock().map_err(|_| CaptionCommandError {
-        code: "state_unavailable",
-        message: "Caption monitor state is unavailable.".to_string(),
-    })?;
-    *monitor = Some(CaptionMonitor { stop_requested });
+        return Err(CaptionCommandError {
+            code: "monitor_start_failed",
+            message,
+        });
+    }
+
+    drop(monitor);
 
     Ok(state.snapshot()?.clone())
 }
@@ -229,12 +233,34 @@ pub fn mark_caption_submitted(app: &AppHandle, caption_text: String) {
 fn monitor_live_captions(app: AppHandle, stop_requested: Arc<AtomicBool>) {
     let result = run_uia_monitor(&app, &stop_requested);
 
-    if let Err(error) = result {
-        update_snapshot(&app, |snapshot| {
-            snapshot.is_monitoring = false;
-            snapshot.last_error = Some(error);
-        });
+    let state = app.state::<CaptionStore>();
+    if !clear_monitor_if_matches(&state, &stop_requested) {
+        return;
     }
+
+    update_snapshot(&app, |snapshot| {
+        snapshot.is_monitoring = false;
+
+        if let Err(error) = result {
+            snapshot.last_error = Some(error);
+        }
+    });
+}
+
+fn clear_monitor_if_matches(store: &CaptionStore, stop_requested: &Arc<AtomicBool>) -> bool {
+    let Ok(mut monitor) = store.monitor.lock() else {
+        return false;
+    };
+
+    let is_current = monitor
+        .as_ref()
+        .is_some_and(|monitor| Arc::ptr_eq(&monitor.stop_requested, stop_requested));
+
+    if is_current {
+        monitor.take();
+    }
+
+    is_current
 }
 
 fn run_uia_monitor(app: &AppHandle, stop_requested: &AtomicBool) -> Result<(), String> {
@@ -674,7 +700,29 @@ impl CaptionStoreExt for CaptionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_caption_text, pending_caption_text, push_caption, CaptionSnapshot};
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    use super::{
+        clean_caption_text, clear_monitor_if_matches, pending_caption_text, push_caption,
+        CaptionMonitor, CaptionSnapshot, CaptionStore,
+    };
+
+    #[test]
+    fn monitor_cleanup_only_removes_the_matching_worker() {
+        let store = CaptionStore::default();
+        let registered_worker = Arc::new(AtomicBool::new(false));
+        let stale_worker = Arc::new(AtomicBool::new(false));
+
+        *store.monitor.lock().expect("monitor lock") = Some(CaptionMonitor {
+            stop_requested: Arc::clone(&registered_worker),
+        });
+
+        assert!(!clear_monitor_if_matches(&store, &stale_worker));
+        assert!(store.monitor.lock().expect("monitor lock").is_some());
+
+        assert!(clear_monitor_if_matches(&store, &registered_worker));
+        assert!(store.monitor.lock().expect("monitor lock").is_none());
+    }
 
     #[test]
     fn clean_caption_text_removes_duplicate_lines_and_artifacts() {
