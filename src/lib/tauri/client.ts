@@ -6,6 +6,7 @@ import type {
   BrowserState,
   CaptionState,
   CommandMap,
+  HotkeyBindingRequest,
   HotkeyState,
 } from './contracts';
 
@@ -49,13 +50,15 @@ export function clearBrowserSession() {
   return invokeCommand('browser_clear_session');
 }
 
-export function resizeBrowser(
-  toolbarHeight: number,
-  viewportWidth: number,
-  viewportHeight: number,
-) {
+export function resizeBrowser(toolbarHeight: number) {
   return invokeCommand('browser_resize', {
-    request: { toolbarHeight, viewportWidth, viewportHeight },
+    request: { toolbarHeight },
+  });
+}
+
+export function setBrowserContentProtected(isContentProtected: boolean) {
+  return invokeCommand('browser_set_content_protected', {
+    request: { isContentProtected },
   });
 }
 
@@ -97,6 +100,10 @@ export function submitAfterUpload() {
 
 export function getHotkeyState() {
   return invokeCommand('hotkeys_get_state');
+}
+
+export function applyHotkeySettings(bindings: HotkeyBindingRequest[]) {
+  return invokeCommand('hotkeys_apply_settings', { request: { bindings } });
 }
 
 export function listenToBrowserState(onState: (state: BrowserState) => void) {

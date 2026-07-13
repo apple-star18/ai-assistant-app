@@ -16,6 +16,7 @@ export interface BrowserState {
   currentUrl: string;
   title: string;
   isLoading: boolean;
+  isContentProtected: boolean;
   lastDownload: BrowserDownload | null;
   lastError: string | null;
 }
@@ -48,6 +49,11 @@ export interface HotkeyBindingState {
   accelerator: string;
   registered: boolean;
   error: string | null;
+}
+
+export interface HotkeyBindingRequest {
+  action: HotkeyBindingState['action'];
+  accelerator: string;
 }
 
 export interface HotkeyState {
@@ -101,8 +107,14 @@ export interface CommandMap {
     args: {
       request: {
         toolbarHeight: number;
-        viewportWidth: number;
-        viewportHeight: number;
+      };
+    };
+    response: BrowserState;
+  };
+  browser_set_content_protected: {
+    args: {
+      request: {
+        isContentProtected: boolean;
       };
     };
     response: BrowserState;
@@ -145,6 +157,14 @@ export interface CommandMap {
   };
   hotkeys_get_state: {
     args: undefined;
+    response: HotkeyState;
+  };
+  hotkeys_apply_settings: {
+    args: {
+      request: {
+        bindings: HotkeyBindingRequest[];
+      };
+    };
     response: HotkeyState;
   };
 }

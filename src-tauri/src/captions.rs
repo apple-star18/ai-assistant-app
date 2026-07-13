@@ -36,6 +36,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(450);
 const WINDOW_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_BUFFER_LINES: usize = 80;
 const MAX_DESCENDANTS_TO_SCAN: i32 = 600;
+const MIN_SOURCE_OVERLAP_CHARS: usize = 8;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +47,8 @@ pub struct CaptionSnapshot {
     launch_attempted: bool,
     current_caption_text: String,
     last_submitted_caption_text: String,
+    #[serde(skip)]
+    last_submitted_source_text: String,
     pending_caption_text: String,
     latest_caption: String,
     caption_buffer: Vec<String>,
@@ -61,6 +64,7 @@ impl Default for CaptionSnapshot {
             launch_attempted: false,
             current_caption_text: String::new(),
             last_submitted_caption_text: String::new(),
+            last_submitted_source_text: String::new(),
             pending_caption_text: String::new(),
             latest_caption: String::new(),
             caption_buffer: Vec::new(),
@@ -210,7 +214,10 @@ pub fn caption_text_for_submission(state: &State<'_, CaptionStore>) -> Result<St
 
 pub fn mark_caption_submitted(app: &AppHandle, caption_text: String) {
     update_snapshot(app, |snapshot| {
+        let submitted_source_text = submitted_source_text(snapshot, &caption_text);
+
         snapshot.last_submitted_caption_text = caption_text;
+        snapshot.last_submitted_source_text = submitted_source_text;
         snapshot.current_caption_text.clear();
         snapshot.pending_caption_text.clear();
         snapshot.latest_caption.clear();
@@ -419,35 +426,88 @@ fn push_caption(snapshot: &mut CaptionSnapshot, caption: String) {
     }
 
     snapshot.latest_caption = caption.clone();
-    snapshot.caption_buffer.push(caption);
+    let source_text = clean_caption_text(&caption);
+    let pending_caption = pending_caption_text(&source_text, &snapshot.last_submitted_source_text);
+
+    if pending_caption.is_empty() {
+        snapshot.current_caption_text.clear();
+        snapshot.pending_caption_text.clear();
+        snapshot.caption_buffer.clear();
+        return;
+    }
+
+    if snapshot.caption_buffer.last() != Some(&pending_caption) {
+        snapshot.caption_buffer.push(pending_caption.clone());
+    }
 
     if snapshot.caption_buffer.len() > MAX_BUFFER_LINES {
         let drain_count = snapshot.caption_buffer.len() - MAX_BUFFER_LINES;
         snapshot.caption_buffer.drain(0..drain_count);
     }
 
-    snapshot.current_caption_text = clean_caption_lines(&snapshot.caption_buffer);
-    snapshot.pending_caption_text = pending_caption_text(
-        &snapshot.current_caption_text,
-        &snapshot.last_submitted_caption_text,
-    );
+    snapshot.current_caption_text = pending_caption.clone();
+    snapshot.pending_caption_text = pending_caption;
 }
 
 fn pending_caption_text(current: &str, last_submitted: &str) -> String {
-    if last_submitted.trim().is_empty() {
+    let current = current.trim();
+    let last_submitted = last_submitted.trim();
+
+    if current.is_empty() || last_submitted.is_empty() {
         return current.to_string();
     }
 
-    current
+    if last_submitted.ends_with(current) {
+        return String::new();
+    }
+
+    if let Some(delta) = current
         .strip_prefix(last_submitted)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(current)
-        .to_string()
+    {
+        return delta.to_string();
+    }
+
+    if let Some(overlap_end) = longest_source_overlap_end(current, last_submitted) {
+        return current[overlap_end..].trim().to_string();
+    }
+
+    current.to_string()
 }
 
-fn clean_caption_lines(lines: &[String]) -> String {
-    clean_caption_text(&lines.join("\n"))
+fn longest_source_overlap_end(current: &str, previous: &str) -> Option<usize> {
+    let mut best_end = None;
+
+    for end in current
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(current.len()))
+        .skip(1)
+    {
+        let prefix = &current[..end];
+        let prefix_chars = prefix.chars().count();
+
+        if prefix_chars >= MIN_SOURCE_OVERLAP_CHARS && previous.ends_with(prefix) {
+            best_end = Some(end);
+        }
+    }
+
+    best_end
+}
+
+fn submitted_source_text(snapshot: &CaptionSnapshot, caption_text: &str) -> String {
+    let latest_source_text = clean_caption_text(&snapshot.latest_caption);
+
+    if !latest_source_text.is_empty() {
+        return latest_source_text;
+    }
+
+    append_caption_text(&snapshot.last_submitted_source_text, caption_text)
+}
+
+fn append_caption_text(base: &str, delta: &str) -> String {
+    clean_caption_text(&[base.trim(), delta.trim()].join("\n"))
 }
 
 fn clean_caption_text(text: &str) -> String {
@@ -614,7 +674,7 @@ impl CaptionStoreExt for CaptionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_caption_text, pending_caption_text};
+    use super::{clean_caption_text, pending_caption_text, push_caption, CaptionSnapshot};
 
     #[test]
     fn clean_caption_text_removes_duplicate_lines_and_artifacts() {
@@ -642,5 +702,37 @@ mod tests {
             pending_caption_text("First sentence. Second sentence.", "First sentence."),
             "Second sentence."
         );
+    }
+
+    #[test]
+    fn pending_caption_text_uses_overlap_when_live_captions_rolls_forward() {
+        assert_eq!(
+            pending_caption_text(
+                "already submitted tail. New sentence.",
+                "This was already submitted tail."
+            ),
+            "New sentence."
+        );
+    }
+
+    #[test]
+    fn push_caption_tracks_only_text_after_last_submit_boundary() {
+        let mut snapshot = CaptionSnapshot::default();
+
+        push_caption(&mut snapshot, "First sentence.".to_string());
+        snapshot.last_submitted_caption_text = snapshot.pending_caption_text.clone();
+        snapshot.last_submitted_source_text = clean_caption_text(&snapshot.latest_caption);
+        snapshot.current_caption_text.clear();
+        snapshot.pending_caption_text.clear();
+        snapshot.latest_caption.clear();
+        snapshot.caption_buffer.clear();
+
+        push_caption(
+            &mut snapshot,
+            "First sentence. Second sentence.".to_string(),
+        );
+
+        assert_eq!(snapshot.current_caption_text, "Second sentence.");
+        assert_eq!(snapshot.pending_caption_text, "Second sentence.");
     }
 }

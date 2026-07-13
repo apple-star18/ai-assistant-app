@@ -13,13 +13,17 @@ use tauri::{
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
     Size, State, Url, WebviewUrl, WebviewWindow, WindowEvent,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+    WINDOW_DISPLAY_AFFINITY,
+};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 64.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
-const MAX_TOOLBAR_HEIGHT: f64 = 180.0;
+const MAX_TOOLBAR_HEIGHT: f64 = 420.0;
 const SCRIPT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +32,7 @@ pub struct BrowserSnapshot {
     current_url: String,
     title: String,
     is_loading: bool,
+    is_content_protected: bool,
     last_download: Option<DownloadSnapshot>,
     last_error: Option<String>,
 }
@@ -38,6 +43,7 @@ impl Default for BrowserSnapshot {
             current_url: CHATGPT_HOME_URL.to_string(),
             title: "ChatGPT".to_string(),
             is_loading: true,
+            is_content_protected: false,
             last_download: None,
             last_error: None,
         }
@@ -81,8 +87,12 @@ pub struct NavigateRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResizeRequest {
     toolbar_height: f64,
-    viewport_width: f64,
-    viewport_height: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetContentProtectionRequest {
+    is_content_protected: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,7 +108,10 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let main_window = app
         .get_webview_window(MAIN_WINDOW_LABEL)
         .expect("main window is configured");
-    main_window.set_content_protected(true)?;
+    main_window.set_content_protected(false)?;
+    if let Ok(hwnd) = main_window.hwnd() {
+        let _ = unsafe { SetWindowDisplayAffinity(hwnd, WDA_NONE) };
+    }
     let app_handle = app.handle().clone();
     let resize_app_handle = app.handle().clone();
     let profile_dir = browser_profile_dir(app)?;
@@ -159,7 +172,18 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-pub fn browser_get_state(state: State<'_, BrowserStore>) -> CommandResult<BrowserSnapshot> {
+pub fn browser_get_state(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+) -> CommandResult<BrowserSnapshot> {
+    if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if let Ok(is_content_protected) = read_window_content_protection(&main_window) {
+            update_snapshot(&app, |snapshot| {
+                snapshot.is_content_protected = is_content_protected;
+            });
+        }
+    }
+
     Ok(state.snapshot()?.clone())
 }
 
@@ -240,14 +264,82 @@ pub fn browser_resize(
     request: ResizeRequest,
 ) -> CommandResult<BrowserSnapshot> {
     let toolbar_height = validate_toolbar_height(request.toolbar_height)?;
-    let viewport_size = validate_viewport_size(request.viewport_width, request.viewport_height)?;
     {
         let mut layout = state.layout()?;
         layout.toolbar_height = toolbar_height;
     }
 
-    resize_browser_to_logical_size(&app, viewport_size);
+    resize_browser_to_window(&app);
     Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
+pub fn browser_set_content_protected(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: SetContentProtectionRequest,
+) -> CommandResult<BrowserSnapshot> {
+    let _requested_content_protection = request.is_content_protected;
+    let main_window =
+        app.get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or_else(|| BrowserCommandError {
+                code: "window_unavailable",
+                message: "Main window is not available.".to_string(),
+            })?;
+
+    let is_content_protected = apply_window_content_protection(&main_window, false)?;
+
+    update_snapshot(&app, |snapshot| {
+        snapshot.is_content_protected = is_content_protected;
+        snapshot.last_error = None;
+    });
+
+    Ok(state.snapshot()?.clone())
+}
+
+fn apply_window_content_protection(
+    window: &WebviewWindow,
+    is_content_protected: bool,
+) -> CommandResult<bool> {
+    window
+        .set_content_protected(is_content_protected)
+        .map_err(BrowserCommandError::from_tauri)?;
+
+    let affinity = if is_content_protected {
+        WDA_EXCLUDEFROMCAPTURE
+    } else {
+        WDA_NONE
+    };
+
+    let hwnd = window.hwnd().map_err(BrowserCommandError::from_tauri)?;
+    unsafe { SetWindowDisplayAffinity(hwnd, affinity) }.map_err(|error| BrowserCommandError {
+        code: "native_error",
+        message: format!(
+            "Failed to {} protected content mode: {}",
+            if is_content_protected {
+                "enable"
+            } else {
+                "disable"
+            },
+            error
+        ),
+    })?;
+
+    read_window_content_protection(window)
+}
+
+fn read_window_content_protection(window: &WebviewWindow) -> CommandResult<bool> {
+    let hwnd = window.hwnd().map_err(BrowserCommandError::from_tauri)?;
+    let mut affinity = WDA_NONE.0;
+
+    unsafe { GetWindowDisplayAffinity(hwnd, &mut affinity) }.map_err(|error| {
+        BrowserCommandError {
+            code: "native_error",
+            message: format!("Failed to read protected content mode: {error}"),
+        }
+    })?;
+
+    Ok(WINDOW_DISPLAY_AFFINITY(affinity) != WDA_NONE)
 }
 
 fn navigate_to(
@@ -371,10 +463,6 @@ fn resize_browser_to_window(app: &AppHandle) {
     resize_browser_to_window_size(app, BrowserWindowSize::Current);
 }
 
-fn resize_browser_to_logical_size(app: &AppHandle, logical_size: LogicalSize<f64>) {
-    resize_browser_to_window_size(app, BrowserWindowSize::Logical(logical_size));
-}
-
 fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize) {
     let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return;
@@ -400,27 +488,42 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
         }
     };
 
-    if let Err(error) = browser.set_bounds(bounds.logical.clone()) {
+    if let Err(error) = browser.set_bounds(Rect {
+        position: bounds.position,
+        size: bounds.size,
+    }) {
         update_snapshot(app, |snapshot| {
             snapshot.last_error = Some(format!("Failed to set browser WebView bounds: {error}"));
+        });
+        return;
+    }
+
+    if let Err(error) = browser.set_auto_resize(true) {
+        update_snapshot(app, |snapshot| {
+            snapshot.last_error = Some(format!("Failed to enable browser auto-resize: {error}"));
         });
     }
 }
 
 fn browser_bounds(window: &WebviewWindow) -> tauri::Result<Rect> {
-    Ok(browser_fit_bounds(window, TOOLBAR_HEIGHT, BrowserWindowSize::Current)?.logical)
+    let bounds = browser_fit_bounds(window, TOOLBAR_HEIGHT, BrowserWindowSize::Current)?;
+
+    Ok(Rect {
+        position: bounds.position,
+        size: bounds.size,
+    })
 }
 
 #[derive(Debug)]
 struct BrowserFitBounds {
-    logical: Rect,
+    position: Position,
+    size: Size,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum BrowserWindowSize {
     Current,
     Physical(PhysicalSize<u32>),
-    Logical(LogicalSize<f64>),
 }
 
 fn browser_fit_bounds(
@@ -435,16 +538,13 @@ fn browser_fit_bounds(
             physical_size.to_logical::<f64>(scale_factor)
         }
         BrowserWindowSize::Physical(physical_size) => physical_size.to_logical::<f64>(scale_factor),
-        BrowserWindowSize::Logical(logical_size) => logical_size,
     };
     let logical_toolbar_height = toolbar_height.round().max(1.0);
     let logical_browser_height = (logical_size.height - logical_toolbar_height).max(1.0);
 
     Ok(BrowserFitBounds {
-        logical: Rect {
-            position: Position::Logical(LogicalPosition::new(0.0, logical_toolbar_height)),
-            size: Size::Logical(LogicalSize::new(logical_size.width, logical_browser_height)),
-        },
+        position: Position::Logical(LogicalPosition::new(0.0, logical_toolbar_height)),
+        size: Size::Logical(LogicalSize::new(logical_size.width, logical_browser_height)),
     })
 }
 
@@ -462,22 +562,6 @@ fn validate_toolbar_height(toolbar_height: f64) -> CommandResult<f64> {
     }
 
     Ok(toolbar_height)
-}
-
-fn validate_viewport_size(width: f64, height: f64) -> CommandResult<LogicalSize<f64>> {
-    if !width.is_finite() || !height.is_finite() {
-        return Err(BrowserCommandError::validation(
-            "Browser viewport size must be finite.",
-        ));
-    }
-
-    if width < 1.0 || height < 1.0 {
-        return Err(BrowserCommandError::validation(
-            "Browser viewport size must be positive.",
-        ));
-    }
-
-    Ok(LogicalSize::new(width.round(), height.round()))
 }
 
 fn browser_profile_dir(app: &App) -> tauri::Result<PathBuf> {

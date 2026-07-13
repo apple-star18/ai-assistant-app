@@ -29,6 +29,7 @@ pub fn run() {
             browser::browser_focus,
             browser::browser_clear_session,
             browser::browser_resize,
+            browser::browser_set_content_protected,
             captions::captions_get_state,
             captions::captions_start,
             captions::captions_stop,
@@ -38,7 +39,8 @@ pub fn run() {
             automation::automation_shortcut_mode_2,
             automation::automation_shortcut_mode_3,
             automation::automation_submit_after_upload,
-            hotkeys::hotkeys_get_state
+            hotkeys::hotkeys_get_state,
+            hotkeys::hotkeys_apply_settings
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Tauri application");
