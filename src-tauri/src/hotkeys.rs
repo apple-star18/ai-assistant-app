@@ -412,12 +412,6 @@ fn report_hotkey_result(app: &AppHandle, result: Result<(), String>) {
     }
 }
 
-fn push_binding_snapshot(app: &AppHandle, binding: HotkeyBindingSnapshot) {
-    update_snapshot(app, |snapshot| {
-        snapshot.bindings.push(binding);
-    });
-}
-
 fn update_snapshot(app: &AppHandle, update: impl FnOnce(&mut HotkeySnapshot)) {
     let state = app.state::<HotkeyStore>();
     let next_snapshot = match state.snapshot.lock() {
@@ -436,16 +430,57 @@ fn apply_hotkey_bindings(
     registered: &mut Vec<HotkeyBinding>,
     bindings: Vec<HotkeyBinding>,
 ) -> Result<(), String> {
-    for binding in registered.drain(..) {
-        let _ = unsafe { UnregisterHotKey(None, binding.id) };
+    let previous_bindings = registered.clone();
+    unregister_hotkey_bindings(registered);
+    let (mut next_registered, attempted_snapshots, errors) = register_hotkey_bindings(&bindings);
+
+    if errors.is_empty() {
+        *registered = next_registered;
+        update_snapshot(app, |snapshot| {
+            snapshot.is_running = true;
+            snapshot.bindings = attempted_snapshots;
+            snapshot.last_error = None;
+        });
+        return Ok(());
     }
+
+    let mut message = errors.join(" ");
+    let snapshots = if previous_bindings.is_empty() {
+        *registered = next_registered;
+        attempted_snapshots
+    } else {
+        unregister_hotkey_bindings(&mut next_registered);
+        let (restored, restored_snapshots, restore_errors) =
+            register_hotkey_bindings(&previous_bindings);
+        *registered = restored;
+
+        if !restore_errors.is_empty() {
+            message.push_str(" The previous shortcuts could not be fully restored: ");
+            message.push_str(&restore_errors.join(" "));
+        }
+
+        restored_snapshots
+    };
 
     update_snapshot(app, |snapshot| {
         snapshot.is_running = true;
-        snapshot.last_error = None;
-        snapshot.bindings.clear();
+        snapshot.bindings = snapshots;
+        snapshot.last_error = Some(message.clone());
     });
+    Err(message)
+}
 
+fn unregister_hotkey_bindings(bindings: &mut Vec<HotkeyBinding>) {
+    for binding in bindings.drain(..) {
+        let _ = unsafe { UnregisterHotKey(None, binding.id) };
+    }
+}
+
+fn register_hotkey_bindings(
+    bindings: &[HotkeyBinding],
+) -> (Vec<HotkeyBinding>, Vec<HotkeyBindingSnapshot>, Vec<String>) {
+    let mut registered = Vec::with_capacity(bindings.len());
+    let mut snapshots = Vec::with_capacity(bindings.len());
     let mut errors = Vec::new();
 
     for binding in bindings {
@@ -454,7 +489,7 @@ fn apply_hotkey_bindings(
         match unsafe { RegisterHotKey(None, binding.id, modifiers, binding.vk) } {
             Ok(()) => {
                 registered.push(binding.clone());
-                push_binding_snapshot(app, binding.snapshot(true, None));
+                snapshots.push(binding.snapshot(true, None));
             }
             Err(error) => {
                 let message = format!(
@@ -462,20 +497,12 @@ fn apply_hotkey_bindings(
                     binding.accelerator
                 );
                 errors.push(message.clone());
-                push_binding_snapshot(app, binding.snapshot(false, Some(message)));
+                snapshots.push(binding.snapshot(false, Some(message)));
             }
         }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        let message = errors.join(" ");
-        update_snapshot(app, |snapshot| {
-            snapshot.last_error = Some(message.clone());
-        });
-        Err(message)
-    }
+    (registered, snapshots, errors)
 }
 
 fn default_hotkeys() -> Vec<HotkeyBinding> {
@@ -840,6 +867,34 @@ impl HotkeyAction {
     }
 }
 
+trait HotkeyStoreExt {
+    fn snapshot(&self) -> CommandResult<MutexGuard<'_, HotkeySnapshot>>;
+    fn controller(&self) -> CommandResult<Sender<HotkeyCommand>>;
+}
+
+impl HotkeyStoreExt for HotkeyStore {
+    fn snapshot(&self) -> CommandResult<MutexGuard<'_, HotkeySnapshot>> {
+        self.snapshot.lock().map_err(|_| HotkeyCommandError {
+            code: "state_unavailable",
+            message: "Hotkey state is unavailable.".to_string(),
+        })
+    }
+
+    fn controller(&self) -> CommandResult<Sender<HotkeyCommand>> {
+        self.controller
+            .lock()
+            .map_err(|_| HotkeyCommandError {
+                code: "state_unavailable",
+                message: "Hotkey controller state is unavailable.".to_string(),
+            })?
+            .clone()
+            .ok_or_else(|| HotkeyCommandError {
+                code: "hotkey_listener_unavailable",
+                message: "Global hotkey listener is not available.".to_string(),
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,33 +942,5 @@ mod tests {
         assert_eq!(clamped_window_axis(650, 50, 100, 1000, 400), 700);
         assert_eq!(clamped_window_axis(700, 50, 100, 1000, 400), 700);
         assert_eq!(clamped_window_axis(250, 50, 100, 200, 400), 100);
-    }
-}
-
-trait HotkeyStoreExt {
-    fn snapshot(&self) -> CommandResult<MutexGuard<'_, HotkeySnapshot>>;
-    fn controller(&self) -> CommandResult<Sender<HotkeyCommand>>;
-}
-
-impl HotkeyStoreExt for HotkeyStore {
-    fn snapshot(&self) -> CommandResult<MutexGuard<'_, HotkeySnapshot>> {
-        self.snapshot.lock().map_err(|_| HotkeyCommandError {
-            code: "state_unavailable",
-            message: "Hotkey state is unavailable.".to_string(),
-        })
-    }
-
-    fn controller(&self) -> CommandResult<Sender<HotkeyCommand>> {
-        self.controller
-            .lock()
-            .map_err(|_| HotkeyCommandError {
-                code: "state_unavailable",
-                message: "Hotkey controller state is unavailable.".to_string(),
-            })?
-            .clone()
-            .ok_or_else(|| HotkeyCommandError {
-                code: "hotkey_listener_unavailable",
-                message: "Global hotkey listener is not available.".to_string(),
-            })
     }
 }

@@ -36,7 +36,7 @@ const MIN_WINDOW_OPACITY: f64 = 0.4;
 const MAX_WINDOW_OPACITY: f64 = 1.0;
 const SCRIPT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserSnapshot {
     current_url: String,
@@ -62,7 +62,7 @@ impl Default for BrowserSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadSnapshot {
     url: String,
@@ -79,12 +79,14 @@ pub struct BrowserStore {
 #[derive(Debug)]
 struct BrowserLayout {
     toolbar_height: f64,
+    settings_overlay_open: bool,
 }
 
 impl Default for BrowserLayout {
     fn default() -> Self {
         Self {
             toolbar_height: TOOLBAR_HEIGHT,
+            settings_overlay_open: false,
         }
     }
 }
@@ -162,7 +164,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     )
     .data_directory(profile_dir)
     .accept_first_mouse(true)
-    .on_navigation(|url| is_allowed_navigation_url(url))
+    .on_navigation(is_allowed_navigation_url)
     .on_new_window(|_, _| NewWindowResponse::Deny)
     .on_document_title_changed({
         let app_handle = app_handle.clone();
@@ -452,6 +454,7 @@ pub fn browser_set_transparency_overlay(
 #[tauri::command]
 pub fn browser_set_settings_overlay(
     app: AppHandle,
+    state: State<'_, BrowserStore>,
     request: SetSettingsOverlayRequest,
 ) -> CommandResult<()> {
     let overlay = app
@@ -463,6 +466,7 @@ pub fn browser_set_settings_overlay(
 
     if !request.is_open {
         overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        state.layout()?.settings_overlay_open = false;
         let _ = app.emit("settings-overlay://closed", ());
         return Ok(());
     }
@@ -479,6 +483,8 @@ pub fn browser_set_settings_overlay(
             "Settings overlay indicator position must be a finite number.",
         ));
     }
+
+    let should_refresh = !state.layout()?.settings_overlay_open;
 
     let indicator_left = request
         .indicator_left
@@ -500,14 +506,20 @@ pub fn browser_set_settings_overlay(
         .set_bounds(Rect { position, size })
         .map_err(BrowserCommandError::from_tauri)?;
     overlay.show().map_err(BrowserCommandError::from_tauri)?;
+    let refresh_script = if should_refresh {
+        " window.refreshSettings && window.refreshSettings();"
+    } else {
+        ""
+    };
     overlay
         .eval(format!(
-            "window.setSettingsIndicatorLeft && window.setSettingsIndicatorLeft({indicator_left}); window.refreshSettings && window.refreshSettings();"
+            "window.setSettingsIndicatorLeft && window.setSettingsIndicatorLeft({indicator_left});{refresh_script}"
         ))
         .map_err(BrowserCommandError::from_tauri)?;
     overlay
         .set_focus()
         .map_err(BrowserCommandError::from_tauri)?;
+    state.layout()?.settings_overlay_open = true;
 
     Ok(())
 }
@@ -685,7 +697,13 @@ fn update_snapshot(app: &AppHandle, update: impl FnOnce(&mut BrowserSnapshot)) {
     let state = app.state::<BrowserStore>();
     let next_snapshot = match state.snapshot.lock() {
         Ok(mut snapshot) => {
+            let previous = snapshot.clone();
             update(&mut snapshot);
+
+            if *snapshot == previous {
+                return;
+            }
+
             snapshot.clone()
         }
         Err(_) => return,
@@ -735,6 +753,18 @@ fn is_allowed_navigation_url(url: &Url) -> bool {
     }
 }
 
+fn is_allowed_chatgpt_automation_url(url: &Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+
+    url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("chatgpt.com")
+            || host.to_ascii_lowercase().ends_with(".chatgpt.com")
+            || host.eq_ignore_ascii_case("chat.openai.com")
+    })
+}
+
 fn resize_browser_to_window(app: &AppHandle) {
     resize_browser_to_window_size(app, BrowserWindowSize::Current);
 }
@@ -778,7 +808,6 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
         update_snapshot(app, |snapshot| {
             snapshot.last_error = Some(format!("Failed to set browser WebView bounds: {error}"));
         });
-        return;
     }
 }
 
@@ -1488,10 +1517,37 @@ fn eval_json(app: &AppHandle, script: impl Into<String>) -> Result<Value, String
     let browser = app
         .get_webview(BROWSER_WEBVIEW_LABEL)
         .ok_or_else(|| "Browser WebView is not available.".to_string())?;
+    let current_url = browser
+        .url()
+        .map_err(|error| format!("Failed to read the browser URL: {error}"))?;
+
+    if !is_allowed_chatgpt_automation_url(&current_url) {
+        return Err(
+            "ChatGPT automation is blocked because the browser is not on a trusted ChatGPT page."
+                .to_string(),
+        );
+    }
+
+    let script = script.into();
+    let script = script.trim().trim_end_matches(';');
+    let guarded_script = format!(
+        r#"
+(() => {{
+  const host = window.location.hostname.toLowerCase();
+  const trustedHost = host === 'chatgpt.com' || host.endsWith('.chatgpt.com') || host === 'chat.openai.com';
+
+  if (window.location.protocol !== 'https:' || !trustedHost) {{
+    return {{ aiAssistantAutomationBlocked: true }};
+  }}
+
+  return ({script});
+}})();
+"#
+    );
     let (tx, rx) = mpsc::channel();
 
     browser
-        .eval_with_callback(script, move |result| {
+        .eval_with_callback(guarded_script, move |result| {
             let _ = tx.send(result);
         })
         .map_err(|error| format!("Failed to evaluate ChatGPT automation script: {error}"))?;
@@ -1500,8 +1556,63 @@ fn eval_json(app: &AppHandle, script: impl Into<String>) -> Result<Value, String
         .recv_timeout(SCRIPT_RESULT_TIMEOUT)
         .map_err(|_| "Timed out waiting for ChatGPT automation script result.".to_string())?;
 
-    match serde_json::from_str(&result) {
+    match serde_json::from_str::<Value>(&result) {
+        Ok(value)
+            if value
+                .get("aiAssistantAutomationBlocked")
+                .and_then(Value::as_bool)
+                == Some(true) =>
+        {
+            Err("ChatGPT automation was blocked after the page origin changed.".to_string())
+        }
         Ok(value) => Ok(value),
         Err(_) => Ok(Value::String(result)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_allowed_chatgpt_automation_url, is_allowed_navigation_url};
+    use tauri::Url;
+
+    #[test]
+    fn navigation_allows_https_and_local_development_only() {
+        assert!(is_allowed_navigation_url(
+            &Url::parse("https://example.com/path").expect("valid URL")
+        ));
+        assert!(is_allowed_navigation_url(
+            &Url::parse("http://127.0.0.1:1420/").expect("valid URL")
+        ));
+        assert!(!is_allowed_navigation_url(
+            &Url::parse("http://example.com/").expect("valid URL")
+        ));
+        assert!(!is_allowed_navigation_url(
+            &Url::parse("file:///C:/Windows/System32/").expect("valid URL")
+        ));
+    }
+
+    #[test]
+    fn automation_requires_a_trusted_chatgpt_origin() {
+        for url in [
+            "https://chatgpt.com/",
+            "https://chatgpt.com/c/123",
+            "https://team.chatgpt.com/",
+            "https://chat.openai.com/",
+        ] {
+            assert!(is_allowed_chatgpt_automation_url(
+                &Url::parse(url).expect("valid URL")
+            ));
+        }
+
+        for url in [
+            "http://chatgpt.com/",
+            "https://chatgpt.com.example.org/",
+            "https://notchatgpt.com/",
+            "https://openai.com/",
+        ] {
+            assert!(!is_allowed_chatgpt_automation_url(
+                &Url::parse(url).expect("valid URL")
+            ));
+        }
     }
 }

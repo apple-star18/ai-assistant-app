@@ -1,8 +1,8 @@
 import {
   FormEvent,
   MouseEvent as ReactMouseEvent,
-  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -105,6 +105,7 @@ function BrowserWindow() {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
+  const isAddressEditingRef = useRef(false);
   const [browserState, setBrowserState] = useState<BrowserState>(initialBrowserState);
   const [captionState, setCaptionState] = useState<CaptionState>(initialCaptionState);
   const [automationState, setAutomationState] = useState<AutomationState>(initialAutomationState);
@@ -120,50 +121,45 @@ function BrowserWindow() {
   useEffect(() => {
     let isMounted = true;
 
-    void getBrowserState()
-      .then((state) => {
-        if (isMounted) {
-          setBrowserState(state);
-          setAddress(state.currentUrl);
-        }
-      })
-      .catch((error: unknown) => {
-        setCommandError(getErrorMessage(error));
-      });
+    void Promise.allSettled([
+      getBrowserState(),
+      getCaptionState(),
+      getAutomationState(),
+      getHotkeyState(),
+    ]).then(([browserResult, captionResult, automationResult, hotkeyResult]) => {
+      if (!isMounted) {
+        return;
+      }
 
-    void getCaptionState()
-      .then((state) => {
-        if (isMounted) {
-          setCaptionState(state);
+      if (browserResult.status === 'fulfilled') {
+        setBrowserState(browserResult.value);
+        if (!isAddressEditingRef.current) {
+          setAddress(browserResult.value.currentUrl);
         }
-      })
-      .catch((error: unknown) => {
-        setCommandError(getErrorMessage(error));
-      });
+      }
+      if (captionResult.status === 'fulfilled') {
+        setCaptionState(captionResult.value);
+      }
+      if (automationResult.status === 'fulfilled') {
+        setAutomationState(automationResult.value);
+      }
+      if (hotkeyResult.status === 'fulfilled') {
+        setHotkeyState(hotkeyResult.value);
+      }
 
-    void getAutomationState()
-      .then((state) => {
-        if (isMounted) {
-          setAutomationState(state);
-        }
-      })
-      .catch((error: unknown) => {
-        setCommandError(getErrorMessage(error));
-      });
-
-    void getHotkeyState()
-      .then((state) => {
-        if (isMounted) {
-          setHotkeyState(state);
-        }
-      })
-      .catch((error: unknown) => {
-        setCommandError(getErrorMessage(error));
-      });
+      const failedRequest = [browserResult, captionResult, automationResult, hotkeyResult].find(
+        (result) => result.status === 'rejected',
+      );
+      if (failedRequest?.status === 'rejected') {
+        setCommandError(getErrorMessage(failedRequest.reason));
+      }
+    });
 
     const unlisten = listenToBrowserState((state) => {
       setBrowserState(state);
-      setAddress(state.currentUrl);
+      if (!isAddressEditingRef.current) {
+        setAddress(state.currentUrl);
+      }
       setCommandError(null);
     });
 
@@ -181,44 +177,40 @@ function BrowserWindow() {
     const unlistenHotkeys = listenToHotkeyState((state) => {
       setHotkeyState(state);
     });
+    const listeners = [unlisten, unlistenCaptions, unlistenAutomation, unlistenHotkeys];
+
+    for (const listener of listeners) {
+      void listener.catch((error: unknown) => {
+        if (isMounted) {
+          setCommandError(getErrorMessage(error));
+        }
+      });
+    }
 
     return () => {
       isMounted = false;
-      void unlisten.then((dispose) => {
-        dispose();
-      });
-      void unlistenCaptions.then((dispose) => {
-        dispose();
-      });
-      void unlistenAutomation.then((dispose) => {
-        dispose();
-      });
-      void unlistenHotkeys.then((dispose) => {
-        dispose();
-      });
+
+      for (const listener of listeners) {
+        void listener.then((dispose) => dispose()).catch(() => undefined);
+      }
     };
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
     const unlisten = listenToSettingsOverlayClosed(() => {
       setIsSettingsOpen(false);
     });
+    void unlisten.catch((error: unknown) => {
+      if (isMounted) {
+        setCommandError(getErrorMessage(error));
+      }
+    });
 
     return () => {
-      void unlisten.then((dispose) => {
-        dispose();
-      });
+      isMounted = false;
+      void unlisten.then((dispose) => dispose()).catch(() => undefined);
     };
-  }, []);
-
-  const getReservedTopHeight = useCallback(() => {
-    if (!toolbarRef.current) {
-      return 0;
-    }
-
-    const reservedTopHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
-
-    return reservedTopHeight;
   }, []);
 
   useEffect(() => {
@@ -252,33 +244,40 @@ function BrowserWindow() {
       return;
     }
 
+    let animationFrame: number | null = null;
     const repositionSettings = () => {
-      void showSettingsOverlay();
+      if (animationFrame !== null) {
+        return;
+      }
+
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        void showSettingsOverlay();
+      });
     };
 
     repositionSettings();
-    const firstFrame = window.requestAnimationFrame(repositionSettings);
-    const settleTimer = window.setTimeout(repositionSettings, 150);
 
     window.addEventListener('resize', repositionSettings);
     window.visualViewport?.addEventListener('resize', repositionSettings);
 
     return () => {
-      window.cancelAnimationFrame(firstFrame);
-      window.clearTimeout(settleTimer);
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
       window.removeEventListener('resize', repositionSettings);
       window.visualViewport?.removeEventListener('resize', repositionSettings);
     };
   }, [isSettingsOpen]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let animationFrame: number | null = null;
-    const settleTimers: number[] = [];
     let isDisposed = false;
+    let lastToolbarHeight: number | null = null;
 
     const syncBrowserBounds = () => {
       if (animationFrame !== null) {
-        window.cancelAnimationFrame(animationFrame);
+        return;
       }
 
       animationFrame = window.requestAnimationFrame(() => {
@@ -288,37 +287,21 @@ function BrowserWindow() {
           return;
         }
 
-        const toolbarHeight = getReservedTopHeight();
+        const toolbarHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
 
-        void resizeBrowser(toolbarHeight)
-          .then((state) => {
-            if (!isDisposed) {
-              setBrowserState(state);
-            }
-          })
-          .catch((error: unknown) => {
-            if (!isDisposed) {
-              setCommandError(getErrorMessage(error));
-            }
-          });
-      });
-    };
-
-    const syncBrowserBoundsUntilSettled = () => {
-      while (settleTimers.length > 0) {
-        const timer = settleTimers.pop();
-
-        if (timer !== undefined) {
-          window.clearTimeout(timer);
+        if (toolbarHeight === lastToolbarHeight) {
+          return;
         }
-      }
 
-      syncBrowserBounds();
+        lastToolbarHeight = toolbarHeight;
 
-      for (const delay of [50, 150, 300, 600]) {
-        const timer = window.setTimeout(syncBrowserBounds, delay);
-        settleTimers.push(timer);
-      }
+        void resizeBrowser(toolbarHeight).catch((error: unknown) => {
+          if (!isDisposed) {
+            lastToolbarHeight = null;
+            setCommandError(getErrorMessage(error));
+          }
+        });
+      });
     };
 
     const observer = new ResizeObserver(syncBrowserBounds);
@@ -327,25 +310,17 @@ function BrowserWindow() {
       observer.observe(toolbarRef.current);
     }
 
-    window.addEventListener('resize', syncBrowserBoundsUntilSettled);
-    window.visualViewport?.addEventListener('resize', syncBrowserBoundsUntilSettled);
-    syncBrowserBoundsUntilSettled();
+    syncBrowserBounds();
 
     return () => {
       isDisposed = true;
       observer.disconnect();
-      window.removeEventListener('resize', syncBrowserBoundsUntilSettled);
-      window.visualViewport?.removeEventListener('resize', syncBrowserBoundsUntilSettled);
-
-      for (const timer of settleTimers) {
-        window.clearTimeout(timer);
-      }
 
       if (animationFrame !== null) {
         window.cancelAnimationFrame(animationFrame);
       }
     };
-  }, [getReservedTopHeight]);
+  }, []);
 
   useEffect(() => {
     const opacityPercent = Math.round(browserState.windowOpacity * 100);
@@ -444,6 +419,7 @@ function BrowserWindow() {
 
   function handleNavigate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    isAddressEditingRef.current = false;
     void runBrowserCommand(() => navigateBrowser(address));
   }
 
@@ -495,7 +471,6 @@ function BrowserWindow() {
   function openSettings() {
     setCommandError(null);
     setIsSettingsOpen(true);
-    void showSettingsOverlay();
   }
 
   function closeSettings() {
@@ -664,7 +639,13 @@ function BrowserWindow() {
               spellCheck={false}
               autoCapitalize="none"
               onChange={(event) => setAddress(event.target.value)}
-              onFocus={(event) => event.currentTarget.select()}
+              onFocus={(event) => {
+                isAddressEditingRef.current = true;
+                event.currentTarget.select();
+              }}
+              onBlur={() => {
+                isAddressEditingRef.current = false;
+              }}
             />
           </label>
 

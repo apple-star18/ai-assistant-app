@@ -37,7 +37,7 @@ const WINDOW_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(12);
 const MAX_DESCENDANTS_TO_SCAN: i32 = 600;
 const MIN_SOURCE_OVERLAP_CHARS: usize = 8;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptionSnapshot {
     is_monitoring: bool,
@@ -52,24 +52,6 @@ pub struct CaptionSnapshot {
     latest_caption: String,
     caption_buffer: Vec<String>,
     last_error: Option<String>,
-}
-
-impl Default for CaptionSnapshot {
-    fn default() -> Self {
-        Self {
-            is_monitoring: false,
-            window_found: false,
-            text_element_found: false,
-            launch_attempted: false,
-            current_caption_text: String::new(),
-            last_submitted_caption_text: String::new(),
-            last_submitted_source_text: String::new(),
-            pending_caption_text: String::new(),
-            latest_caption: String::new(),
-            caption_buffer: Vec::new(),
-            last_error: None,
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -389,7 +371,7 @@ fn capture_caption_text(automation: &IUIAutomation) -> Result<Option<CaptionCapt
         return Ok(None);
     };
 
-    let text = unsafe { find_caption_text(&window) }
+    let text = unsafe { find_caption_text(automation, &window) }
         .map_err(|error| format!("UI Automation text search failed: {error}"))?;
 
     Ok(text.map(|text| CaptionCapture { text }))
@@ -424,8 +406,11 @@ unsafe fn find_live_captions_window(
     Ok(None)
 }
 
-unsafe fn find_caption_text(window: &IUIAutomationElement) -> WindowsResult<Option<String>> {
-    let condition = unsafe { create_true_condition_from_element(window)? };
+unsafe fn find_caption_text(
+    automation: &IUIAutomation,
+    window: &IUIAutomationElement,
+) -> WindowsResult<Option<String>> {
+    let condition = unsafe { automation.CreateTrueCondition()? };
     let descendants = unsafe { window.FindAll(TreeScope_Descendants, &condition)? };
     let count = unsafe { descendants.Length()?.min(MAX_DESCENDANTS_TO_SCAN) };
     let mut best_text = String::new();
@@ -450,14 +435,6 @@ unsafe fn find_caption_text(window: &IUIAutomationElement) -> WindowsResult<Opti
     } else {
         Ok(Some(best_text))
     }
-}
-
-unsafe fn create_true_condition_from_element(
-    element: &IUIAutomationElement,
-) -> WindowsResult<windows::Win32::UI::Accessibility::IUIAutomationCondition> {
-    let automation = create_automation()?;
-    let _ = element;
-    unsafe { automation.CreateTrueCondition() }
 }
 
 fn is_text_like_control(
@@ -710,8 +687,7 @@ fn clean_caption_text(text: &str) -> String {
 
 fn clean_caption_line(line: &str) -> String {
     let mut cleaned = line
-        .replace('\u{266a}', " ")
-        .replace('\u{266b}', " ")
+        .replace(['\u{266a}', '\u{266b}'], " ")
         .replace("[Music]", " ")
         .replace("(Music)", " ")
         .replace("[Applause]", " ")
@@ -747,25 +723,11 @@ fn join_caption_sentences(lines: &[String]) -> String {
             continue;
         }
 
-        if result.ends_with(['.', '!', '?', ':', ';']) {
-            result.push(' ');
-            result.push_str(line);
-        } else if starts_with_sentence_continuation(line) {
-            result.push(' ');
-            result.push_str(line);
-        } else {
-            result.push(' ');
-            result.push_str(line);
-        }
+        result.push(' ');
+        result.push_str(line);
     }
 
     result.trim().to_string()
-}
-
-fn starts_with_sentence_continuation(line: &str) -> bool {
-    line.chars().next().is_some_and(|character| {
-        character.is_lowercase() || matches!(character, ',' | '.' | '?' | '!')
-    })
 }
 
 fn launch_live_captions() -> Result<(), String> {
@@ -829,7 +791,13 @@ fn update_snapshot(app: &AppHandle, update: impl FnOnce(&mut CaptionSnapshot)) {
     let state = app.state::<CaptionStore>();
     let next_snapshot = match state.snapshot.lock() {
         Ok(mut snapshot) => {
+            let previous = snapshot.clone();
             update(&mut snapshot);
+
+            if *snapshot == previous {
+                return;
+            }
+
             snapshot.clone()
         }
         Err(_) => return,

@@ -235,22 +235,22 @@ pub(crate) fn run_mode_1_reserved(
 ) -> Result<(), String> {
     let automation = app.state::<AutomationStore>();
 
-    run_workflow(&app, &automation, AutomationMode::CaptionSubmit, || {
+    run_workflow(app, &automation, AutomationMode::CaptionSubmit, || {
         ensure_not_cancelled(&permit.token)?;
-        let new_caption_text = captions::take_caption_batch_for_hotkey(&app)?;
-        let prompt_text = prepare_caption_prompt(&app, &new_caption_text)?;
-        remember_prepared_prompt(&app, &prompt_text)?;
+        let new_caption_text = captions::take_caption_batch_for_hotkey(app)?;
+        let prompt_text = prepare_caption_prompt(app, &new_caption_text)?;
+        remember_prepared_prompt(app, &prompt_text)?;
 
         let result = (|| {
             submit_caption_when_ready(
                 &prompt_text,
                 |text| {
                     ensure_not_cancelled(&permit.token)?;
-                    browser::copy_text_to_chatgpt_input(&app, text)
+                    browser::copy_text_to_chatgpt_input(app, text)
                 },
                 || {
                     browser::wait_and_submit_chatgpt_input_cancellable(
-                        &app,
+                        app,
                         CHATGPT_SUBMIT_TIMEOUT,
                         || permit.token.is_cancelled(),
                     )
@@ -260,7 +260,7 @@ pub(crate) fn run_mode_1_reserved(
             Ok(UploadState::Idle)
         })();
 
-        finish_prepared_prompt(&app, result.is_ok(), permit.token.is_cancelled());
+        finish_prepared_prompt(app, result.is_ok(), permit.token.is_cancelled());
         result
     })
     .map(|_| ())
@@ -322,17 +322,17 @@ pub(crate) fn run_mode_2_reserved(
     let automation = app.state::<AutomationStore>();
 
     run_workflow(
-        &app,
+        app,
         &automation,
         AutomationMode::ScreenshotCaptionSubmit,
         || {
             ensure_not_cancelled(&permit.token)?;
-            let new_caption_text = captions::take_caption_batch_for_hotkey(&app)?;
-            let prompt_text = prepare_caption_prompt(&app, &new_caption_text)?;
-            remember_prepared_prompt(&app, &prompt_text)?;
+            let new_caption_text = captions::take_caption_batch_for_hotkey(app)?;
+            let prompt_text = prepare_caption_prompt(app, &new_caption_text)?;
+            remember_prepared_prompt(app, &prompt_text)?;
 
-            let result = run_mode_2_prompt_workflow(&app, &permit.token, &prompt_text);
-            finish_prepared_prompt(&app, result.is_ok(), permit.token.is_cancelled());
+            let result = run_mode_2_prompt_workflow(app, &permit.token, &prompt_text);
+            finish_prepared_prompt(app, result.is_ok(), permit.token.is_cancelled());
             result
         },
     )
@@ -1080,8 +1080,8 @@ fn reset_mode_3_state(state: &mut Mode3CoordinatorState) {
 pub fn submit_after_upload(app: &AppHandle) -> Result<(), String> {
     let automation = app.state::<AutomationStore>();
 
-    run_workflow(&app, &automation, AutomationMode::ScreenshotOnly, || {
-        browser::submit_chatgpt_when_upload_ready(&app)?;
+    run_workflow(app, &automation, AutomationMode::ScreenshotOnly, || {
+        browser::submit_chatgpt_when_upload_ready(app)?;
         Ok(UploadState::Ready)
     })
     .map(|_| ())
