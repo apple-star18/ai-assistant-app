@@ -122,6 +122,10 @@ export interface CommandMap {
     args: undefined;
     response: BrowserState;
   };
+  browser_open_profile: {
+    args: undefined;
+    response: BrowserState;
+  };
   browser_focus: {
     args: undefined;
     response: undefined;

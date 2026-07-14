@@ -24,6 +24,7 @@ import {
   minimizeMainWindow,
   navigateBrowser,
   openBrowserHome,
+  openBrowserProfile,
   reloadBrowser,
   resizeBrowser,
   setBrowserSettingsOverlay,
@@ -600,6 +601,16 @@ function BrowserWindow() {
           </button>
 
           <button
+            className="profile-button"
+            type="button"
+            title="Profile"
+            aria-label="Open ChatGPT profile menu"
+            onClick={() => void runBrowserCommand(openBrowserProfile)}
+          >
+            <ProfileIcon />
+          </button>
+
+          <button
             className={
               browserState.isContentProtected ? 'protection-button protected' : 'protection-button'
             }
@@ -766,6 +777,15 @@ function SendIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
       <path d="M4 12 20 4l-5 16-3.2-6.8L4 12Z" />
       <path d="m11.8 13.2 3.6-3.6" />
+    </svg>
+  );
+}
+
+function ProfileIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <circle cx="12" cy="8" r="3.25" />
+      <path d="M5.5 19c.7-3.3 3-5 6.5-5s5.8 1.7 6.5 5" />
     </svg>
   );
 }

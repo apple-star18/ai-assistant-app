@@ -27,6 +27,7 @@ pub fn run() {
             browser::browser_reload,
             browser::browser_go_back,
             browser::browser_go_forward,
+            browser::browser_open_profile,
             browser::browser_focus,
             browser::browser_clear_session,
             browser::browser_resize,

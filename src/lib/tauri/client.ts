@@ -66,6 +66,10 @@ export function goBrowserForward() {
   return invokeCommand('browser_go_forward');
 }
 
+export function openBrowserProfile() {
+  return invokeCommand('browser_open_profile');
+}
+
 export function focusBrowser() {
   return invokeCommand('browser_focus');
 }

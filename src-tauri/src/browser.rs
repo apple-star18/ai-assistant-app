@@ -322,6 +322,53 @@ pub fn browser_go_forward(
 }
 
 #[tauri::command]
+pub fn browser_open_profile(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+) -> CommandResult<BrowserSnapshot> {
+    let result = eval_json(
+        &app,
+        r#"
+(() => {
+  const selectors = [
+    'button[data-testid="accounts-profile-button"]',
+    'button[data-testid="profile-button"]',
+    'button[aria-label="Open profile menu"]',
+    'button[aria-label="Profile"]'
+  ];
+  const profileButton = selectors
+    .map((selector) => document.querySelector(selector))
+    .find((element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const bounds = element.getBoundingClientRect();
+      return bounds.width > 0 && bounds.height > 0;
+    });
+
+  if (!profileButton) {
+    return { ok: false };
+  }
+
+  profileButton.click();
+  return { ok: true };
+})()
+"#,
+    )
+    .map_err(|message| BrowserCommandError {
+        code: "profile_unavailable",
+        message,
+    })?;
+
+    if result.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(BrowserCommandError {
+            code: "profile_unavailable",
+            message: "The ChatGPT profile button is not available on this page.".to_string(),
+        });
+    }
+
+    Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
 pub fn browser_focus(app: AppHandle) -> CommandResult<()> {
     app.browser_webview()?
         .set_focus()
