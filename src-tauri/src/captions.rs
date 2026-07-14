@@ -230,13 +230,26 @@ pub fn caption_text_for_submission(state: &State<'_, CaptionStore>) -> Result<St
 /// captions observed after the hotkey press always belong to the next batch. The detached text
 /// is owned by the hotkey worker and is dropped when that worker succeeds or gives up.
 pub fn take_caption_batch_for_hotkey(app: &AppHandle) -> Result<String, String> {
+    take_caption_batch_for_hotkey_with_empty(app, false)
+}
+
+/// Detaches the current caption batch when available, or returns an empty batch.
+/// Mode 2 uses this so a screenshot can still be submitted without Live Captions text.
+pub fn take_caption_batch_for_hotkey_or_empty(app: &AppHandle) -> Result<String, String> {
+    take_caption_batch_for_hotkey_with_empty(app, true)
+}
+
+fn take_caption_batch_for_hotkey_with_empty(
+    app: &AppHandle,
+    allow_empty: bool,
+) -> Result<String, String> {
     let state = app.state::<CaptionStore>();
     let (caption_text, next_snapshot) = {
         let mut snapshot = state
             .snapshot
             .lock()
             .map_err(|_| "Caption state is unavailable.".to_string())?;
-        let caption_text = take_caption_batch_from_snapshot(&mut snapshot)?;
+        let caption_text = take_caption_batch_from_snapshot(&mut snapshot, allow_empty)?;
         (caption_text, snapshot.clone())
     };
 
@@ -244,7 +257,10 @@ pub fn take_caption_batch_for_hotkey(app: &AppHandle) -> Result<String, String> 
     Ok(caption_text)
 }
 
-fn take_caption_batch_from_snapshot(snapshot: &mut CaptionSnapshot) -> Result<String, String> {
+fn take_caption_batch_from_snapshot(
+    snapshot: &mut CaptionSnapshot,
+    allow_empty: bool,
+) -> Result<String, String> {
     let source = if snapshot.pending_caption_text.trim().is_empty() {
         &snapshot.current_caption_text
     } else {
@@ -253,7 +269,11 @@ fn take_caption_batch_from_snapshot(snapshot: &mut CaptionSnapshot) -> Result<St
     let caption_text = clean_caption_text(source);
 
     if caption_text.is_empty() {
-        return Err("No caption text is ready to submit.".to_string());
+        return if allow_empty {
+            Ok(String::new())
+        } else {
+            Err("No caption text is ready to submit.".to_string())
+        };
     }
 
     // Keep only the bounded visible source as the next collection boundary. Do not retain the
@@ -945,7 +965,7 @@ mod tests {
         push_caption(&mut snapshot, "Before hotkey.".to_string());
 
         assert_eq!(
-            take_caption_batch_from_snapshot(&mut snapshot).expect("caption batch"),
+            take_caption_batch_from_snapshot(&mut snapshot, false).expect("caption batch"),
             "Before hotkey."
         );
         assert!(snapshot.pending_caption_text.is_empty());
@@ -953,5 +973,16 @@ mod tests {
         push_caption(&mut snapshot, "Before hotkey. After hotkey.".to_string());
 
         assert_eq!(snapshot.pending_caption_text, "After hotkey.");
+    }
+
+    #[test]
+    fn mode_2_can_take_an_empty_caption_batch_without_changing_caption_state() {
+        let mut snapshot = CaptionSnapshot::default();
+
+        assert_eq!(
+            take_caption_batch_from_snapshot(&mut snapshot, true).expect("optional caption batch"),
+            ""
+        );
+        assert_eq!(snapshot, CaptionSnapshot::default());
     }
 }

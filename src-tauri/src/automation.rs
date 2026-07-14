@@ -244,7 +244,7 @@ pub(crate) fn run_mode_1_reserved(
     let automation = app.state::<AutomationStore>();
 
     run_workflow(app, &automation, AutomationMode::CaptionSubmit, || {
-        let prompt_text = take_and_prepare_caption_prompt(app, &permit.token)?;
+        let prompt_text = take_and_prepare_caption_prompt(app, &permit.token, false)?;
 
         let result = (|| {
             submit_caption_when_ready(
@@ -336,7 +336,7 @@ pub(crate) fn run_mode_2_reserved(
         &automation,
         AutomationMode::ScreenshotCaptionSubmit,
         || {
-            let prompt_text = take_and_prepare_caption_prompt(app, &permit.token)?;
+            let prompt_text = take_and_prepare_caption_prompt(app, &permit.token, true)?;
 
             let result = run_mode_2_prompt_workflow(app, &permit.token, &prompt_text);
             finish_prepared_prompt(
@@ -422,6 +422,12 @@ fn run_mode_2_prompt_workflow(
                 }
             }
 
+            if prompt_text.trim().is_empty() {
+                return Err(format!(
+                    "Image upload failed and no Live Captions text was available to submit: {upload_error}"
+                ));
+            }
+
             submit_caption_when_ready(
                 prompt_text,
                 |text| {
@@ -462,6 +468,7 @@ fn ensure_not_cancelled(token: &CancellationToken) -> Result<(), String> {
 fn take_and_prepare_caption_prompt(
     app: &AppHandle,
     token: &CancellationToken,
+    allow_empty_caption: bool,
 ) -> Result<String, String> {
     let automation = app.state::<AutomationStore>();
     let has_refresh_prompt = !automation
@@ -482,7 +489,11 @@ fn take_and_prepare_caption_prompt(
     // Refresh takes the same gate after changing the cancellation epoch. This makes
     // detaching captions and remembering their prompt atomic from Refresh's point of view.
     ensure_not_cancelled(token)?;
-    let new_caption_text = captions::take_caption_batch_for_hotkey(app)?;
+    let new_caption_text = if allow_empty_caption {
+        captions::take_caption_batch_for_hotkey_or_empty(app)?
+    } else {
+        captions::take_caption_batch_for_hotkey(app)?
+    };
     let prompt_text =
         prepare_caption_prompt(app, &new_caption_text, live_refresh_prompt.as_deref())?;
     remember_prepared_prompt(app, &prompt_text)?;
