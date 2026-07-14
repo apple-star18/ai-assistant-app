@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import type {
   AutomationState,
@@ -15,6 +16,27 @@ import type {
 type CommandName = keyof CommandMap;
 type CommandArgs<TCommand extends CommandName> = CommandMap[TCommand]['args'];
 type CommandResponse<TCommand extends CommandName> = CommandMap[TCommand]['response'];
+
+const mainWindow = getCurrentWindow();
+
+export type WindowResizeDirection =
+  'East' | 'North' | 'NorthEast' | 'NorthWest' | 'South' | 'SouthEast' | 'SouthWest' | 'West';
+
+export function minimizeMainWindow() {
+  return mainWindow.minimize();
+}
+
+export function closeMainWindow() {
+  return mainWindow.close();
+}
+
+export function startMainWindowDragging() {
+  return mainWindow.startDragging();
+}
+
+export function startMainWindowResizeDragging(direction: WindowResizeDirection) {
+  return mainWindow.startResizeDragging(direction);
+}
 
 export function getAppHealth() {
   return invokeCommand('get_app_health');

@@ -1,6 +1,15 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import {
+  closeMainWindow,
   getAutomationState,
   focusBrowser,
   getBrowserState,
@@ -12,6 +21,7 @@ import {
   listenToCaptionState,
   listenToHotkeyState,
   listenToSettingsOverlayClosed,
+  minimizeMainWindow,
   navigateBrowser,
   openBrowserHome,
   reloadBrowser,
@@ -20,11 +30,14 @@ import {
   setBrowserContentProtected,
   setBrowserTransparencyOverlay,
   startCaptions,
+  startMainWindowDragging,
+  startMainWindowResizeDragging,
   stopCaptions,
   submitCaptionsToChatGpt,
 } from './lib/tauri/client';
 import type { AutomationState, BrowserState, CaptionState } from './lib/tauri/contracts';
 import type { HotkeyState } from './lib/tauri/contracts';
+import type { WindowResizeDirection } from './lib/tauri/client';
 
 const initialBrowserState: BrowserState = {
   currentUrl: 'https://chatgpt.com/',
@@ -69,6 +82,20 @@ const TRANSPARENCY_OVERLAY_HEIGHT = 43;
 const SETTINGS_OVERLAY_WIDTH = 332;
 const SETTINGS_OVERLAY_HEIGHT = 500;
 const SETTINGS_OVERLAY_MARGIN = 8;
+const WINDOW_CONTENT_INSET = 12;
+const WINDOW_RESIZE_HANDLES: ReadonlyArray<{
+  direction: WindowResizeDirection;
+  position: string;
+}> = [
+  { direction: 'North', position: 'north' },
+  { direction: 'NorthEast', position: 'north-east' },
+  { direction: 'East', position: 'east' },
+  { direction: 'SouthEast', position: 'south-east' },
+  { direction: 'South', position: 'south' },
+  { direction: 'SouthWest', position: 'south-west' },
+  { direction: 'West', position: 'west' },
+  { direction: 'NorthWest', position: 'north-west' },
+];
 
 export function App() {
   return <BrowserWindow />;
@@ -325,8 +352,8 @@ function BrowserWindow() {
 
     void setBrowserTransparencyOverlay({
       isOpen: isTransparencyOpen,
-      left: transparencyControlLeft,
-      top: TRANSPARENCY_OVERLAY_TOP,
+      left: transparencyControlLeft + WINDOW_CONTENT_INSET,
+      top: TRANSPARENCY_OVERLAY_TOP + WINDOW_CONTENT_INSET,
       width: TRANSPARENCY_CONTROL_WIDTH,
       height: TRANSPARENCY_OVERLAY_HEIGHT,
       opacityPercent,
@@ -389,6 +416,30 @@ function BrowserWindow() {
     } catch (error) {
       setCommandError(getErrorMessage(error));
     }
+  }
+
+  async function runWindowCommand(command: () => Promise<void>) {
+    setCommandError(null);
+
+    try {
+      await command();
+    } catch (error) {
+      setCommandError(getErrorMessage(error));
+    }
+  }
+
+  function handleToolbarMouseDown(event: ReactMouseEvent<HTMLFormElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const target = event.target;
+
+    if (target instanceof Element && target.closest('button, input, label, a, [role="button"]')) {
+      return;
+    }
+
+    void runWindowCommand(startMainWindowDragging);
   }
 
   function handleNavigate(event: FormEvent<HTMLFormElement>) {
@@ -487,8 +538,8 @@ function BrowserWindow() {
     try {
       await setBrowserSettingsOverlay({
         isOpen: true,
-        left,
-        top,
+        left: left + WINDOW_CONTENT_INSET,
+        top: top + WINDOW_CONTENT_INSET,
         width,
         height,
         indicatorLeft,
@@ -521,9 +572,16 @@ function BrowserWindow() {
   }
 
   return (
-    <main className="browser-shell" aria-label="ChatGPT browser">
+    <main
+      className={browserState.isContentProtected ? 'browser-shell protected' : 'browser-shell'}
+      aria-label="ChatGPT browser"
+    >
       <div ref={toolbarRef} className="browser-top-layer">
-        <form className="browser-toolbar" onSubmit={handleNavigate}>
+        <form
+          className="browser-toolbar"
+          onMouseDown={handleToolbarMouseDown}
+          onSubmit={handleNavigate}
+        >
           <div className="window-title">
             <span className="app-mark" aria-hidden="true">
               AI
@@ -639,8 +697,44 @@ function BrowserWindow() {
             />
             <span>{statusMessage}</span>
           </div>
+
+          <div className="window-controls" aria-label="Window controls">
+            <button
+              className="window-minimize-button"
+              type="button"
+              title="Minimize"
+              aria-label="Minimize window"
+              onClick={() => void runWindowCommand(minimizeMainWindow)}
+            >
+              <span aria-hidden="true">&#8722;</span>
+            </button>
+            <button
+              className="window-close-button"
+              type="button"
+              title="Close"
+              aria-label="Close window"
+              onClick={() => void runWindowCommand(closeMainWindow)}
+            >
+              <span aria-hidden="true">&#215;</span>
+            </button>
+          </div>
         </form>
       </div>
+      {WINDOW_RESIZE_HANDLES.map(({ direction, position }) => (
+        <div
+          key={direction}
+          className={`window-resize-handle ${position}`}
+          aria-hidden="true"
+          onMouseDown={(event) => {
+            if (event.button !== 0) {
+              return;
+            }
+
+            event.preventDefault();
+            void runWindowCommand(() => startMainWindowResizeDragging(direction));
+          }}
+        />
+      ))}
     </main>
   );
 }

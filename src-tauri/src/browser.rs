@@ -28,6 +28,7 @@ const SETTINGS_OVERLAY_WEBVIEW_LABEL: &str = "settings-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
+const WINDOW_CONTENT_INSET: f64 = 12.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
 const MAX_TOOLBAR_HEIGHT: f64 = 420.0;
 const DEFAULT_WINDOW_OPACITY: f64 = 1.0;
@@ -599,16 +600,18 @@ pub fn protected_content_capture_mask(app: &AppHandle) -> Option<CaptureMask> {
     let inner_position = main_window.inner_position().ok()?;
     let inner_size = main_window.inner_size().ok()?;
     let toolbar_height = (toolbar_height * scale_factor).round() as i32;
-    let height = inner_size.height as i32 - toolbar_height;
+    let content_inset = (WINDOW_CONTENT_INSET * scale_factor).round() as i32;
+    let width = inner_size.width as i32 - content_inset * 2;
+    let height = inner_size.height as i32 - toolbar_height - content_inset * 2;
 
-    if height <= 0 {
+    if width <= 0 || height <= 0 {
         return None;
     }
 
     let mask = CaptureMask {
-        x: inner_position.x,
-        y: inner_position.y + toolbar_height,
-        width: inner_size.width as i32,
+        x: inner_position.x + content_inset,
+        y: inner_position.y + toolbar_height + content_inset,
+        width,
         height,
     };
 
@@ -814,11 +817,19 @@ fn browser_fit_bounds(
         BrowserWindowSize::Physical(physical_size) => physical_size.to_logical::<f64>(scale_factor),
     };
     let logical_toolbar_height = toolbar_height.round().max(1.0);
-    let logical_browser_height = (logical_size.height - logical_toolbar_height).max(1.0);
+    let logical_browser_width = (logical_size.width - WINDOW_CONTENT_INSET * 2.0).max(1.0);
+    let logical_browser_height =
+        (logical_size.height - logical_toolbar_height - WINDOW_CONTENT_INSET * 2.0).max(1.0);
 
     Ok(BrowserFitBounds {
-        position: Position::Logical(LogicalPosition::new(0.0, logical_toolbar_height)),
-        size: Size::Logical(LogicalSize::new(logical_size.width, logical_browser_height)),
+        position: Position::Logical(LogicalPosition::new(
+            WINDOW_CONTENT_INSET,
+            logical_toolbar_height + WINDOW_CONTENT_INSET,
+        )),
+        size: Size::Logical(LogicalSize::new(
+            logical_browser_width,
+            logical_browser_height,
+        )),
     })
 }
 
