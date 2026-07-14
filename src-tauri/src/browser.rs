@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED,
 };
 
-use crate::{automation, captions, screenshot::CaptureMask};
+use crate::{automation, captions};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
@@ -186,7 +186,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 snapshot.last_error = None;
             });
             if matches!(payload.event(), PageLoadEvent::Finished) {
-                automation::restore_retained_prompt_after_page_load(&app_handle);
+                automation::restore_refresh_prompt_after_page_load(&app_handle);
             }
             resize_browser_to_window(&resize_app_handle);
         }
@@ -288,7 +288,10 @@ pub fn browser_reload(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
-    automation::prepare_for_refresh(&app).map_err(BrowserCommandError::automation)?;
+    // Hold the reset guard through the reload call so no new automation can start
+    // between cancellation and WebView navigation.
+    let _reset_guard =
+        automation::prepare_for_refresh(&app).map_err(BrowserCommandError::automation)?;
     let browser = app.browser_webview()?;
     browser.reload().map_err(BrowserCommandError::from_tauri)?;
 
@@ -588,46 +591,6 @@ fn read_window_display_affinity(window: &Window) -> CommandResult<WINDOW_DISPLAY
     })?;
 
     Ok(WINDOW_DISPLAY_AFFINITY(affinity))
-}
-
-pub fn protected_content_capture_mask(app: &AppHandle) -> Option<CaptureMask> {
-    let state = app.state::<BrowserStore>();
-    let is_content_protected = state
-        .snapshot
-        .lock()
-        .ok()
-        .map(|snapshot| snapshot.is_content_protected)?;
-
-    if !is_content_protected {
-        return None;
-    }
-
-    let toolbar_height = state
-        .layout
-        .lock()
-        .map(|layout| layout.toolbar_height)
-        .unwrap_or(TOOLBAR_HEIGHT);
-    let main_window = app.get_window(MAIN_WINDOW_LABEL)?;
-    let scale_factor = main_window.scale_factor().ok()?;
-    let inner_position = main_window.inner_position().ok()?;
-    let inner_size = main_window.inner_size().ok()?;
-    let toolbar_height = (toolbar_height * scale_factor).round() as i32;
-    let content_inset = (WINDOW_CONTENT_INSET * scale_factor).round() as i32;
-    let width = inner_size.width as i32 - content_inset * 2;
-    let height = inner_size.height as i32 - toolbar_height - content_inset * 2;
-
-    if width <= 0 || height <= 0 {
-        return None;
-    }
-
-    let mask = CaptureMask {
-        x: inner_position.x + content_inset,
-        y: inner_position.y + toolbar_height + content_inset,
-        width,
-        height,
-    };
-
-    Some(mask)
 }
 
 fn navigate_to(
@@ -1481,36 +1444,6 @@ pub fn wait_and_submit_chatgpt_input_cancellable(
     Err(format!(
         "Timed out waiting for the ChatGPT send button to become enabled: {last_reason}"
     ))
-}
-
-pub fn submit_chatgpt_input_if_ready(app: &AppHandle) -> Result<bool, String> {
-    if app.get_webview(BROWSER_WEBVIEW_LABEL).is_none() {
-        return Err("Browser WebView is not available.".to_string());
-    }
-
-    let result = eval_json(
-        app,
-        r#"
-(() => {
-  const selectors = [
-    'button[data-testid="send-button"]',
-    'button[aria-label="Send prompt"]',
-    'button[aria-label="Send message"]',
-    'form button[type="submit"]'
-  ];
-  const button = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
-
-  if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') {
-    return { submitted: false };
-  }
-
-  button.click();
-  return { submitted: true };
-})();
-"#,
-    )?;
-
-    Ok(result.get("submitted").and_then(Value::as_bool) == Some(true))
 }
 
 fn eval_json(app: &AppHandle, script: impl Into<String>) -> Result<Value, String> {
