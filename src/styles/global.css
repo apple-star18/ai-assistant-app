@@ -1,6 +1,6 @@
 :root {
   color: #1d232c;
-  background: #f4f6f8;
+  background: transparent;
   font-family:
     Inter,
     ui-sans-serif,
@@ -22,6 +22,7 @@ body,
 #root {
   width: 100%;
   height: 100%;
+  background: transparent;
 }
 
 body {
@@ -46,7 +47,7 @@ button {
   align-items: center;
   justify-content: center;
   place-items: center;
-  border: 1px solid #c9d0d8;
+  border: 0;
   border-radius: 6px;
   background: #ffffff;
   color: #202833;
@@ -67,11 +68,88 @@ input:focus-visible {
 }
 
 .browser-shell {
+  position: relative;
   display: grid;
   width: 100%;
   height: 100%;
   grid-template-rows: auto 1fr;
-  background: #000000;
+  border: 2px solid transparent;
+  background: transparent;
+  padding: 10px;
+}
+
+.browser-shell.protected {
+  border-color: #8b949e;
+  border-style: dashed;
+}
+
+.window-resize-handle {
+  position: absolute;
+  z-index: 2147483647;
+}
+
+.window-resize-handle.north,
+.window-resize-handle.south {
+  right: 12px;
+  left: 12px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.window-resize-handle.north {
+  top: 0;
+}
+
+.window-resize-handle.south {
+  bottom: 0;
+}
+
+.window-resize-handle.east,
+.window-resize-handle.west {
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.window-resize-handle.east {
+  right: 0;
+}
+
+.window-resize-handle.west {
+  left: 0;
+}
+
+.window-resize-handle.north-east,
+.window-resize-handle.north-west,
+.window-resize-handle.south-east,
+.window-resize-handle.south-west {
+  width: 12px;
+  height: 12px;
+}
+
+.window-resize-handle.north-east {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.window-resize-handle.north-west {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.window-resize-handle.south-east {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+}
+
+.window-resize-handle.south-west {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
 }
 
 .browser-top-layer {
@@ -95,12 +173,12 @@ input:focus-visible {
   background: #07090d;
   overflow: visible;
   padding: 8px;
+  user-select: none;
 }
 
 .browser-toolbar button {
   width: 30px;
   height: 30px;
-  border-color: #2b313b;
   background: #151922;
   color: #eef2f6;
   font-size: 0.86rem;
@@ -122,12 +200,10 @@ input:focus-visible {
 }
 
 .browser-toolbar button:hover {
-  border-color: #3b4655;
   background: #202632;
 }
 
 .browser-toolbar button:disabled {
-  border-color: #252a33;
   background: #11151c;
   color: #6f7a88;
   cursor: not-allowed;
@@ -208,7 +284,6 @@ input:focus-visible {
 }
 
 .caption-button {
-  border-color: #315b4c;
   color: #dff8ef;
 }
 
@@ -217,7 +292,6 @@ input:focus-visible {
 }
 
 .caption-submit-button {
-  border-color: #36527c;
   color: #e6eefb;
 }
 
@@ -234,7 +308,6 @@ input:focus-visible {
 .settings-button {
   min-width: 30px;
   padding: 0;
-  border-color: #343b47;
   color: #f1f5f9;
 }
 
@@ -243,12 +316,10 @@ input:focus-visible {
 }
 
 .settings-button.active {
-  border-color: #4e5b6e;
   background: #202632;
 }
 
 .protection-button {
-  border-color: #35445c;
   color: #dce7f7;
 }
 
@@ -257,7 +328,6 @@ input:focus-visible {
 }
 
 .protection-button.protected {
-  border-color: #315b4c;
   color: #dff8ef;
 }
 
@@ -266,7 +336,6 @@ input:focus-visible {
 }
 
 .transparency-button {
-  border-color: #59496a;
   color: #efe7fb;
 }
 
@@ -276,7 +345,6 @@ input:focus-visible {
 }
 
 .transparency-button.adjusted {
-  border-color: #8067a3;
   color: #f3eaff;
 }
 
@@ -296,6 +364,32 @@ input:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.window-controls {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(2, 30px);
+  gap: 4px;
+}
+
+.browser-toolbar .window-minimize-button,
+.browser-toolbar .window-close-button {
+  background: transparent;
+  font-size: 1rem;
+}
+
+.browser-toolbar .window-close-button {
+  font-size: 1.15rem;
+}
+
+.browser-toolbar .window-minimize-button:hover {
+  background: #202632;
+}
+
+.browser-toolbar .window-close-button:hover {
+  background: #c42b2b;
+  color: #ffffff;
 }
 
 .status-dot {

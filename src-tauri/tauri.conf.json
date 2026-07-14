@@ -16,8 +16,11 @@
         "title": "AI Assistant Browser",
         "width": 667,
         "height": 800,
-        "minWidth": 560,
-        "minHeight": 640
+        "minWidth": 667,
+        "minHeight": 640,
+        "decorations": false,
+        "shadow": false,
+        "transparent": true
       }
     ],
     "security": {
