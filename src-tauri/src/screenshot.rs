@@ -35,7 +35,7 @@ pub fn capture_primary_display_png(masks: &[CaptureMask]) -> Result<ScreenshotPn
         apply_mask(&mut capture, width, height, *mask);
     }
 
-    let png = encode_png(width as u32, height as u32, &capture)?;
+    let png = encode_png(width as u32, height as u32, &mut capture)?;
 
     Ok(ScreenshotPng {
         file_name: "assistant-screenshot.png".to_string(),
@@ -48,6 +48,7 @@ fn capture_bgra(width: i32, height: i32) -> Result<Vec<u8>, String> {
     let memory_dc = MemoryDc::new(screen_dc.0)?;
     let bitmap = Bitmap::new(screen_dc.0, width, height)?;
     let previous = unsafe { SelectObject(memory_dc.0, HGDIOBJ(bitmap.0 .0)) };
+    let _selection = SelectedObject::new(memory_dc.0, previous)?;
 
     unsafe {
         BitBlt(
@@ -76,7 +77,16 @@ fn capture_bgra(width: i32, height: i32) -> Result<Vec<u8>, String> {
         },
         ..Default::default()
     };
-    let mut pixels = vec![0_u8; width as usize * height as usize * 4];
+    let byte_len = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "Primary display is too large to capture safely.".to_string())?;
+    let mut pixels = vec![0_u8; byte_len];
     let copied = unsafe {
         GetDIBits(
             memory_dc.0,
@@ -89,12 +99,10 @@ fn capture_bgra(width: i32, height: i32) -> Result<Vec<u8>, String> {
         )
     };
 
-    unsafe {
-        SelectObject(memory_dc.0, previous);
-    }
-
-    if copied == 0 {
-        return Err("Failed to read captured screen pixels.".to_string());
+    if copied != height {
+        return Err(format!(
+            "Failed to read all captured screen pixels ({copied} of {height} rows)."
+        ));
     }
 
     Ok(pixels)
@@ -127,14 +135,10 @@ fn apply_mask(bgra: &mut [u8], screen_width: i32, screen_height: i32, mask: Capt
     }
 }
 
-fn encode_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
-    let mut rgba = Vec::with_capacity(bgra.len());
-
-    for pixel in bgra.chunks_exact(4) {
-        rgba.push(pixel[2]);
-        rgba.push(pixel[1]);
-        rgba.push(pixel[0]);
-        rgba.push(255);
+fn encode_png(width: u32, height: u32, pixels: &mut [u8]) -> Result<Vec<u8>, String> {
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        pixel[3] = 255;
     }
 
     let mut png_bytes = Vec::new();
@@ -146,7 +150,7 @@ fn encode_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
             .write_header()
             .map_err(|error| format!("Failed to initialize PNG encoder: {error}"))?;
         writer
-            .write_image_data(&rgba)
+            .write_image_data(pixels)
             .map_err(|error| format!("Failed to encode screenshot PNG: {error}"))?;
     }
 
@@ -193,6 +197,29 @@ impl Drop for MemoryDc {
     fn drop(&mut self) {
         unsafe {
             let _ = DeleteDC(self.0);
+        }
+    }
+}
+
+struct SelectedObject {
+    dc: HDC,
+    previous: HGDIOBJ,
+}
+
+impl SelectedObject {
+    fn new(dc: HDC, previous: HGDIOBJ) -> Result<Self, String> {
+        if previous.is_invalid() {
+            Err("Failed to select the screen capture bitmap.".to_string())
+        } else {
+            Ok(Self { dc, previous })
+        }
+    }
+}
+
+impl Drop for SelectedObject {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.dc, self.previous);
         }
     }
 }
