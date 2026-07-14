@@ -64,7 +64,15 @@ export interface AutomationState {
 }
 
 export interface HotkeyBindingState {
-  action: 'shortcutMode1' | 'shortcutMode2' | 'shortcutMode3';
+  action:
+    | 'shortcutMode1'
+    | 'shortcutMode2'
+    | 'shortcutMode3'
+    | 'shortcutMoveUp'
+    | 'shortcutMoveDown'
+    | 'shortcutMoveRight'
+    | 'shortcutMoveLeft'
+    | 'shortcutToggleWindow';
   accelerator: string;
   registered: boolean;
   error: string | null;
