@@ -74,11 +74,15 @@ pub struct AutomationCommandError {
 pub struct AutomationStore {
     snapshot: Mutex<AutomationSnapshot>,
     caption_workflow_reserved: Arc<AtomicBool>,
+    caption_prompt_gate: Mutex<()>,
     mode_3_coordinator: Arc<Mode3Coordinator>,
     cancellation_epoch: Arc<AtomicU64>,
     resetting: Arc<AtomicBool>,
     prepared_prompt: Mutex<String>,
-    retained_prompt: Mutex<String>,
+    refresh_prompt: Mutex<String>,
+    refresh_restore_pending: AtomicBool,
+    refresh_prompt_restored: AtomicBool,
+    previous_submitted_prompt: Mutex<String>,
     preferences: Mutex<AutomationPreferences>,
 }
 
@@ -148,6 +152,10 @@ pub fn setup(app: &AppHandle) {
 
 pub fn cancelled_error() -> String {
     AUTOMATION_CANCELLED.to_string()
+}
+
+pub fn is_cancelled_error(message: &str) -> bool {
+    message == AUTOMATION_CANCELLED
 }
 
 #[tauri::command]
@@ -236,10 +244,7 @@ pub(crate) fn run_mode_1_reserved(
     let automation = app.state::<AutomationStore>();
 
     run_workflow(app, &automation, AutomationMode::CaptionSubmit, || {
-        ensure_not_cancelled(&permit.token)?;
-        let new_caption_text = captions::take_caption_batch_for_hotkey(app)?;
-        let prompt_text = prepare_caption_prompt(app, &new_caption_text)?;
-        remember_prepared_prompt(app, &prompt_text)?;
+        let prompt_text = take_and_prepare_caption_prompt(app, &permit.token, false)?;
 
         let result = (|| {
             submit_caption_when_ready(
@@ -260,7 +265,12 @@ pub(crate) fn run_mode_1_reserved(
             Ok(UploadState::Idle)
         })();
 
-        finish_prepared_prompt(app, result.is_ok(), permit.token.is_cancelled());
+        finish_prepared_prompt(
+            app,
+            &prompt_text,
+            result.is_ok(),
+            permit.token.is_cancelled(),
+        );
         result
     })
     .map(|_| ())
@@ -326,13 +336,15 @@ pub(crate) fn run_mode_2_reserved(
         &automation,
         AutomationMode::ScreenshotCaptionSubmit,
         || {
-            ensure_not_cancelled(&permit.token)?;
-            let new_caption_text = captions::take_caption_batch_for_hotkey(app)?;
-            let prompt_text = prepare_caption_prompt(app, &new_caption_text)?;
-            remember_prepared_prompt(app, &prompt_text)?;
+            let prompt_text = take_and_prepare_caption_prompt(app, &permit.token, true)?;
 
             let result = run_mode_2_prompt_workflow(app, &permit.token, &prompt_text);
-            finish_prepared_prompt(app, result.is_ok(), permit.token.is_cancelled());
+            finish_prepared_prompt(
+                app,
+                &prompt_text,
+                result.is_ok(),
+                permit.token.is_cancelled(),
+            );
             result
         },
     )
@@ -348,10 +360,7 @@ fn run_mode_2_prompt_workflow(
     let mut upload_was_injected = false;
     let upload_result = (|| {
         ensure_not_cancelled(token)?;
-        let masks = browser::protected_content_capture_mask(app)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let screenshot = screenshot::capture_primary_display_png(&masks)?;
+        let screenshot = screenshot::capture_primary_display_png()?;
         ensure_not_cancelled(token)?;
         browser::upload_screenshot_to_chatgpt_input(app, &screenshot.file_name, &screenshot.bytes)?;
         drop(screenshot);
@@ -413,6 +422,12 @@ fn run_mode_2_prompt_workflow(
                 }
             }
 
+            if prompt_text.trim().is_empty() {
+                return Err(format!(
+                    "Image upload failed and no Live Captions text was available to submit: {upload_error}"
+                ));
+            }
+
             submit_caption_when_ready(
                 prompt_text,
                 |text| {
@@ -450,8 +465,77 @@ fn ensure_not_cancelled(token: &CancellationToken) -> Result<(), String> {
     }
 }
 
-fn prepare_caption_prompt(app: &AppHandle, new_caption_text: &str) -> Result<String, String> {
+fn take_and_prepare_caption_prompt(
+    app: &AppHandle,
+    token: &CancellationToken,
+    allow_empty_caption: bool,
+) -> Result<String, String> {
     let automation = app.state::<AutomationStore>();
+    let has_refresh_prompt = !automation
+        .refresh_prompt
+        .lock()
+        .map_err(|_| "Refresh prompt memory is unavailable.".to_string())?
+        .trim()
+        .is_empty();
+    let live_refresh_prompt = has_refresh_prompt
+        .then(|| browser::read_chatgpt_prompt_text(app).ok())
+        .flatten();
+
+    let _gate = automation
+        .caption_prompt_gate
+        .lock()
+        .map_err(|_| "Caption prompt preparation is unavailable.".to_string())?;
+
+    // Refresh takes the same gate after changing the cancellation epoch. This makes
+    // detaching captions and remembering their prompt atomic from Refresh's point of view.
+    ensure_not_cancelled(token)?;
+    let new_caption_text = if allow_empty_caption {
+        captions::take_caption_batch_for_hotkey_or_empty(app)?
+    } else {
+        captions::take_caption_batch_for_hotkey(app)?
+    };
+    let prompt_text =
+        prepare_caption_prompt(app, &new_caption_text, live_refresh_prompt.as_deref())?;
+    remember_prepared_prompt(app, &prompt_text)?;
+    Ok(prompt_text)
+}
+
+fn prepare_caption_prompt(
+    app: &AppHandle,
+    new_caption_text: &str,
+    live_refresh_prompt: Option<&str>,
+) -> Result<String, String> {
+    let automation = app.state::<AutomationStore>();
+    let refresh_prompt = automation
+        .refresh_prompt
+        .lock()
+        .map_err(|_| "Refresh prompt memory is unavailable.".to_string())?
+        .clone();
+
+    // A draft restored by Refresh is a one-time continuation for the next Mode 1/2 run.
+    if !refresh_prompt.trim().is_empty() {
+        if let Some(live_prompt) = live_refresh_prompt {
+            if !live_prompt.trim().is_empty() {
+                return Ok(merge_prompt_text(live_prompt, new_caption_text));
+            }
+
+            if automation.refresh_prompt_restored.load(Ordering::Acquire) {
+                // The user submitted or cleared the restored draft manually.
+                automation
+                    .refresh_prompt
+                    .lock()
+                    .map_err(|_| "Refresh prompt memory is unavailable.".to_string())?
+                    .clear();
+            } else {
+                // Mode 1/2 can be pressed before the post-reload restore worker finds
+                // ChatGPT's composer. Keep the stored draft in that case.
+                return Ok(merge_prompt_text(&refresh_prompt, new_caption_text));
+            }
+        } else {
+            return Ok(merge_prompt_text(&refresh_prompt, new_caption_text));
+        }
+    }
+
     let keep_existing = automation
         .preferences
         .lock()
@@ -462,18 +546,11 @@ fn prepare_caption_prompt(app: &AppHandle, new_caption_text: &str) -> Result<Str
         return Ok(new_caption_text.to_string());
     }
 
-    let existing = browser::read_chatgpt_prompt_text(app)
-        .ok()
-        .filter(|text| !text.trim().is_empty())
-        .or_else(|| {
-            automation
-                .retained_prompt
-                .lock()
-                .ok()
-                .map(|text| text.clone())
-                .filter(|text| !text.trim().is_empty())
-        })
-        .unwrap_or_default();
+    let existing = automation
+        .previous_submitted_prompt
+        .lock()
+        .map_err(|_| "Previous submitted prompt memory is unavailable.".to_string())?
+        .clone();
 
     Ok(merge_prompt_text(&existing, new_caption_text))
 }
@@ -499,7 +576,7 @@ fn remember_prepared_prompt(app: &AppHandle, prompt_text: &str) -> Result<(), St
     Ok(())
 }
 
-fn finish_prepared_prompt(app: &AppHandle, submitted: bool, cancelled: bool) {
+fn finish_prepared_prompt(app: &AppHandle, prompt_text: &str, submitted: bool, cancelled: bool) {
     let automation = app.state::<AutomationStore>();
     if submitted || !cancelled {
         if let Ok(mut prompt) = automation.prepared_prompt.lock() {
@@ -508,31 +585,40 @@ fn finish_prepared_prompt(app: &AppHandle, submitted: bool, cancelled: bool) {
         }
     }
     if submitted {
-        if let Ok(mut prompt) = automation.retained_prompt.lock() {
+        if let Ok(mut prompt) = automation.previous_submitted_prompt.lock() {
+            *prompt = prompt_text.to_string();
+        }
+        if let Ok(mut prompt) = automation.refresh_prompt.lock() {
             prompt.clear();
             prompt.shrink_to_fit();
         }
+        automation
+            .refresh_restore_pending
+            .store(false, Ordering::Release);
+        automation
+            .refresh_prompt_restored
+            .store(false, Ordering::Release);
     }
 }
 
-struct ResetGuard {
+pub(crate) struct NavigationResetGuard {
     resetting: Arc<AtomicBool>,
 }
 
-impl Drop for ResetGuard {
+impl Drop for NavigationResetGuard {
     fn drop(&mut self) {
         self.resetting.store(false, Ordering::Release);
     }
 }
 
-fn begin_navigation_reset(app: &AppHandle) -> Result<ResetGuard, String> {
+fn begin_navigation_reset(app: &AppHandle) -> Result<NavigationResetGuard, String> {
     let automation = app.state::<AutomationStore>();
     automation
         .resetting
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Automation reset is already in progress.".to_string())?;
     automation.cancellation_epoch.fetch_add(1, Ordering::AcqRel);
-    Ok(ResetGuard {
+    Ok(NavigationResetGuard {
         resetting: Arc::clone(&automation.resetting),
     })
 }
@@ -559,26 +645,45 @@ fn wait_for_automation_workers(app: &AppHandle) -> Result<(), String> {
     Err("Timed out waiting for automation workers to exit.".to_string())
 }
 
-pub fn prepare_for_refresh(app: &AppHandle) -> Result<(), String> {
-    let _guard = begin_navigation_reset(app)?;
-    let prompt_from_page = browser::read_chatgpt_prompt_text(app).unwrap_or_default();
-    wait_for_automation_workers(app)?;
-
+pub(crate) fn prepare_for_refresh(app: &AppHandle) -> Result<NavigationResetGuard, String> {
+    let guard = begin_navigation_reset(app)?;
     let automation = app.state::<AutomationStore>();
-    let prepared_prompt = automation
-        .prepared_prompt
-        .lock()
-        .map_err(|_| "Prepared prompt memory is unavailable.".to_string())?
-        .clone();
-    let prompt_to_restore = if prepared_prompt.trim().is_empty() {
+    let prepared_before_read = {
+        let _gate = automation
+            .caption_prompt_gate
+            .lock()
+            .map_err(|_| "Caption prompt preparation is unavailable.".to_string())?;
+        automation
+            .prepared_prompt
+            .lock()
+            .map_err(|_| "Prepared prompt memory is unavailable.".to_string())?
+            .clone()
+    };
+
+    // Prefer an in-flight Mode 1/2 prompt. Reading the page is only necessary for an
+    // ordinary unsent draft, which keeps active-workflow refreshes close to native reload speed.
+    let prompt_from_page = if prepared_before_read.trim().is_empty() {
+        browser::read_chatgpt_prompt_text(app).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let prompt_to_restore = if prepared_before_read.trim().is_empty() {
         prompt_from_page
     } else {
-        prepared_prompt
+        prepared_before_read
     };
+    let has_prompt_to_restore = !prompt_to_restore.trim().is_empty();
     *automation
-        .retained_prompt
+        .refresh_prompt
         .lock()
-        .map_err(|_| "Retained prompt memory is unavailable.".to_string())? = prompt_to_restore;
+        .map_err(|_| "Refresh prompt memory is unavailable.".to_string())? = prompt_to_restore;
+    automation
+        .refresh_restore_pending
+        .store(has_prompt_to_restore, Ordering::Release);
+    automation
+        .refresh_prompt_restored
+        .store(false, Ordering::Release);
     automation
         .prepared_prompt
         .lock()
@@ -586,20 +691,30 @@ pub fn prepare_for_refresh(app: &AppHandle) -> Result<(), String> {
         .clear();
 
     reset_automation_runtime(app)?;
-    Ok(())
+    Ok(guard)
 }
 
 pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
     let _guard = begin_navigation_reset(app)?;
     wait_for_automation_workers(app)?;
     let automation = app.state::<AutomationStore>();
-    for memory in [&automation.prepared_prompt, &automation.retained_prompt] {
+    for memory in [
+        &automation.prepared_prompt,
+        &automation.refresh_prompt,
+        &automation.previous_submitted_prompt,
+    ] {
         let mut text = memory
             .lock()
             .map_err(|_| "Prompt memory is unavailable.".to_string())?;
         text.clear();
         text.shrink_to_fit();
     }
+    automation
+        .refresh_restore_pending
+        .store(false, Ordering::Release);
+    automation
+        .refresh_prompt_restored
+        .store(false, Ordering::Release);
     reset_automation_runtime(app)
 }
 
@@ -618,14 +733,12 @@ fn reset_automation_runtime(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn restore_retained_prompt_after_page_load(app: &AppHandle) {
+pub fn restore_refresh_prompt_after_page_load(app: &AppHandle) {
     let automation = app.state::<AutomationStore>();
-    let has_prompt = automation
-        .retained_prompt
-        .lock()
-        .map(|prompt| !prompt.trim().is_empty())
-        .unwrap_or(false);
-    if !has_prompt {
+    if !automation
+        .refresh_restore_pending
+        .swap(false, Ordering::AcqRel)
+    {
         return;
     }
 
@@ -639,7 +752,7 @@ pub fn restore_retained_prompt_after_page_load(app: &AppHandle) {
                     return;
                 }
                 let prompt = automation
-                    .retained_prompt
+                    .refresh_prompt
                     .lock()
                     .map(|prompt| prompt.clone())
                     .unwrap_or_default();
@@ -647,6 +760,9 @@ pub fn restore_retained_prompt_after_page_load(app: &AppHandle) {
                     return;
                 }
                 if browser::copy_text_to_chatgpt_input(&worker_app, &prompt).is_ok() {
+                    automation
+                        .refresh_prompt_restored
+                        .store(true, Ordering::Release);
                     return;
                 }
                 thread::sleep(Duration::from_millis(500));
@@ -781,10 +897,7 @@ pub(crate) fn start_mode_3_job(app: &AppHandle) -> Result<Mode3JobPermit, String
 pub(crate) fn run_mode_3_reserved(app: &AppHandle, permit: Mode3JobPermit) -> Result<(), String> {
     let upload_result = (|| {
         ensure_not_cancelled(&permit.token)?;
-        let masks = browser::protected_content_capture_mask(app)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let screenshot = screenshot::capture_primary_display_png(&masks)?;
+        let screenshot = screenshot::capture_primary_display_png()?;
         ensure_not_cancelled(&permit.token)?;
         browser::upload_screenshot_to_chatgpt_input(app, &screenshot.file_name, &screenshot.bytes)?;
         drop(screenshot);
@@ -808,6 +921,12 @@ fn finish_mode_3_job(
     upload_result: Result<(), String>,
     allow_finalize: bool,
 ) -> Result<bool, String> {
+    // Refresh resets the shared coordinator immediately. A cancelled job must not
+    // decrement or add errors to a newer batch that may begin after reload.
+    if !allow_finalize {
+        return Ok(false);
+    }
+
     let mut state = permit
         .coordinator
         .state
@@ -877,98 +996,44 @@ fn finalize_mode_3_batch(
             return Err(cancelled_error());
         }
 
-        if mode_3_batch_changed(coordinator, generation)? {
-            continue;
-        }
-
-        match wait_and_submit_stable_mode_3_batch(app, coordinator, generation, token)? {
-            Mode3SubmitOutcome::Submitted(mut warnings) => {
-                if let Err(error) = upload_readiness {
-                    warnings.push(error);
-                }
-                let warnings = format_mode_3_warnings(warnings);
-                complete_mode_3_batch(app, coordinator, warnings)?;
-                return Ok(());
-            }
-            Mode3SubmitOutcome::BatchChanged => continue,
-            Mode3SubmitOutcome::TimedOut(error) => {
-                return fail_and_clear_mode_3_batch(
-                    app,
-                    coordinator,
-                    format!("Mode 3 submission did not succeed after one retry: {error}"),
-                );
-            }
+        let readiness_warning = upload_readiness.err();
+        if complete_mode_3_upload_batch(app, coordinator, generation, readiness_warning)? {
+            return Ok(());
         }
     }
 }
 
-enum Mode3SubmitOutcome {
-    Submitted(Vec<String>),
-    BatchChanged,
-    TimedOut(String),
-}
-
-fn wait_and_submit_stable_mode_3_batch(
+fn complete_mode_3_upload_batch(
     app: &AppHandle,
     coordinator: &Arc<Mode3Coordinator>,
     generation: u64,
-    token: &CancellationToken,
-) -> Result<Mode3SubmitOutcome, String> {
-    let started_at = std::time::Instant::now();
-    let mut last_error = "The ChatGPT send button remained disabled.".to_string();
-
-    while started_at.elapsed() < CHATGPT_SUBMIT_TIMEOUT {
-        if token.is_cancelled() {
-            cancel_mode_3_finalizer(coordinator)?;
-            return Err(cancelled_error());
-        }
-        let mut state = coordinator
-            .state
-            .lock()
-            .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
-
-        if state.active_jobs != 0 || state.generation != generation {
-            return Ok(Mode3SubmitOutcome::BatchChanged);
-        }
-
-        match browser::submit_chatgpt_input_if_ready(app) {
-            Ok(true) => {
-                let warnings = state.upload_errors.clone();
-                reset_mode_3_state(&mut state);
-                return Ok(Mode3SubmitOutcome::Submitted(warnings));
-            }
-            Ok(false) => {
-                last_error = "The ChatGPT send button remained disabled.".to_string();
-            }
-            Err(error) => last_error = error,
-        }
-
-        drop(state);
-        thread::sleep(Duration::from_millis(500));
-    }
-
-    // One final immediate retry is allowed after the 30-second wait expires.
-    if token.is_cancelled() {
-        cancel_mode_3_finalizer(coordinator)?;
-        return Err(cancelled_error());
-    }
+    readiness_warning: Option<String>,
+) -> Result<bool, String> {
     let mut state = coordinator
         .state
         .lock()
         .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+
     if state.active_jobs != 0 || state.generation != generation {
-        return Ok(Mode3SubmitOutcome::BatchChanged);
+        return Ok(false);
     }
 
-    match browser::submit_chatgpt_input_if_ready(app) {
-        Ok(true) => {
-            let warnings = state.upload_errors.clone();
-            reset_mode_3_state(&mut state);
-            Ok(Mode3SubmitOutcome::Submitted(warnings))
-        }
-        Ok(false) => Ok(Mode3SubmitOutcome::TimedOut(last_error)),
-        Err(error) => Ok(Mode3SubmitOutcome::TimedOut(error)),
+    let mut warnings = state.upload_errors.clone();
+    if let Some(warning) = readiness_warning {
+        warnings.push(warning);
     }
+    let warnings = format_mode_3_warnings(warnings);
+    reset_mode_3_state(&mut state);
+
+    // Publish while holding the coordinator lock. A new Mode 3 job can only set the
+    // snapshot back to running after this completed batch is marked ready.
+    update_snapshot(app, |snapshot| {
+        snapshot.is_running = false;
+        snapshot.upload_state = UploadState::Ready;
+        snapshot.last_error = warnings;
+    });
+    drop(state);
+    Ok(true)
 }
 
 fn cancel_mode_3_finalizer(coordinator: &Arc<Mode3Coordinator>) -> Result<(), String> {
@@ -980,45 +1045,13 @@ fn cancel_mode_3_finalizer(coordinator: &Arc<Mode3Coordinator>) -> Result<(), St
     Ok(())
 }
 
-fn mode_3_batch_changed(
-    coordinator: &Arc<Mode3Coordinator>,
-    generation: u64,
-) -> Result<bool, String> {
-    let state = coordinator
-        .state
-        .lock()
-        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
-    Ok(state.active_jobs != 0 || state.generation != generation)
-}
-
 fn format_mode_3_warnings(warnings: Vec<String>) -> Option<String> {
     (!warnings.is_empty()).then(|| {
         format!(
-            "Mode 3 submitted the available screenshots and ignored upload failures: {}",
+            "Mode 3 uploaded the available screenshots and ignored upload failures: {}",
             warnings.join("; ")
         )
     })
-}
-
-fn complete_mode_3_batch(
-    app: &AppHandle,
-    coordinator: &Arc<Mode3Coordinator>,
-    warnings: Option<String>,
-) -> Result<(), String> {
-    // The state was already reset atomically with the Send click. Only publish the result here.
-    let state = coordinator
-        .state
-        .lock()
-        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
-    let has_next_batch = state.active_jobs > 0 || state.finalizing;
-
-    update_snapshot(app, |snapshot| {
-        snapshot.is_running = has_next_batch;
-        snapshot.upload_state = UploadState::Ready;
-        snapshot.last_error = warnings;
-    });
-    drop(state);
-    Ok(())
 }
 
 fn fail_mode_3_batch_without_submission(
@@ -1031,35 +1064,6 @@ fn fail_mode_3_batch_without_submission(
         .lock()
         .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
     reset_mode_3_state(&mut state);
-
-    update_snapshot(app, |snapshot| {
-        snapshot.is_running = false;
-        snapshot.upload_state = UploadState::Failed;
-        snapshot.last_error = Some(message.clone());
-    });
-    drop(state);
-    Err(message)
-}
-
-fn fail_and_clear_mode_3_batch(
-    app: &AppHandle,
-    coordinator: &Arc<Mode3Coordinator>,
-    error: String,
-) -> Result<(), String> {
-    let mut state = coordinator
-        .state
-        .lock()
-        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
-
-    let clear_result = browser::clear_chatgpt_composer(app, ATTACHMENT_DISCARD_TIMEOUT);
-    reset_mode_3_state(&mut state);
-
-    let message = match clear_result {
-        Ok(()) => format!("{error} The ChatGPT composer was cleared."),
-        Err(clear_error) => {
-            format!("{error} The ChatGPT composer could not be completely cleared: {clear_error}")
-        }
-    };
 
     update_snapshot(app, |snapshot| {
         snapshot.is_running = false;
@@ -1105,6 +1109,12 @@ fn run_workflow(
             update_snapshot(app, |snapshot| {
                 snapshot.is_running = false;
                 snapshot.upload_state = upload_state;
+            });
+        }
+        Err(message) if is_cancelled_error(&message) => {
+            return Err(AutomationCommandError {
+                code: "automation_cancelled",
+                message,
             });
         }
         Err(message) => {
@@ -1270,6 +1280,34 @@ mod tests {
         assert_eq!(state.successful_injections, 1);
         assert_eq!(state.upload_errors, vec!["capture failed"]);
         assert!(state.finalizing);
+    }
+
+    #[test]
+    fn cancelled_mode_3_job_does_not_mutate_a_reset_batch() {
+        let coordinator = Arc::new(Mode3Coordinator::default());
+        let epoch = Arc::new(AtomicU64::new(1));
+        {
+            let mut state = coordinator.state.lock().expect("coordinator state");
+            state.active_jobs = 1;
+            state.generation = 8;
+        }
+        let cancelled_job = Mode3JobPermit {
+            coordinator: Arc::clone(&coordinator),
+            token: super::CancellationToken { epoch, expected: 0 },
+        };
+
+        assert!(!finish_mode_3_job(
+            &cancelled_job,
+            Err("navigation interrupted upload".to_string()),
+            false,
+        )
+        .unwrap());
+
+        let state = coordinator.state.lock().expect("coordinator state");
+        assert_eq!(state.active_jobs, 1);
+        assert_eq!(state.generation, 8);
+        assert!(state.upload_errors.is_empty());
+        assert!(!state.finalizing);
     }
 
     #[test]

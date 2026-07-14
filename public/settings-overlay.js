@@ -87,7 +87,7 @@ function renderFields() {
   keepPromptInput.name = 'keepExistingPrompt';
   keepPromptInput.checked = Boolean(automationPreferences.keepExistingPrompt);
   const keepPromptText = document.createElement('span');
-  keepPromptText.textContent = 'Keep existing prompt when Mode 1 or Mode 2 adds new captions';
+  keepPromptText.textContent = 'Keep the previous submitted Mode 1/2 prompt when adding new captions';
   keepPromptLabel.append(keepPromptInput, keepPromptText);
 
   fieldsElement.replaceChildren(

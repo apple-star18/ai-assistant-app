@@ -406,6 +406,9 @@ fn toggle_main_window(app: &AppHandle) -> Result<(), String> {
 
 fn report_hotkey_result(app: &AppHandle, result: Result<(), String>) {
     if let Err(message) = result {
+        if automation::is_cancelled_error(&message) {
+            return;
+        }
         update_snapshot(app, |snapshot| {
             snapshot.last_error = Some(message);
         });
