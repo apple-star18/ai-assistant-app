@@ -18,6 +18,31 @@ const shortcutFields = [
     label: 'Capture Only',
     defaultAccelerator: 'Ctrl+Shift+S',
   },
+  {
+    action: 'shortcutMoveUp',
+    label: 'Move Up',
+    defaultAccelerator: 'Ctrl+Up',
+  },
+  {
+    action: 'shortcutMoveDown',
+    label: 'Move Down',
+    defaultAccelerator: 'Ctrl+Down',
+  },
+  {
+    action: 'shortcutMoveRight',
+    label: 'Move Right',
+    defaultAccelerator: 'Ctrl+Right',
+  },
+  {
+    action: 'shortcutMoveLeft',
+    label: 'Move Left',
+    defaultAccelerator: 'Ctrl+Left',
+  },
+  {
+    action: 'shortcutToggleWindow',
+    label: 'Hide / Show',
+    defaultAccelerator: 'Ctrl+\\',
+  },
 ];
 
 let hotkeyState = {
@@ -257,6 +282,16 @@ function keyFromEvent(event) {
     case 'Esc':
     case 'Escape':
       return 'Esc';
+    case 'ArrowUp':
+      return 'Up';
+    case 'ArrowDown':
+      return 'Down';
+    case 'ArrowRight':
+      return 'Right';
+    case 'ArrowLeft':
+      return 'Left';
+    case '\\':
+      return '\\';
     default:
       return null;
   }

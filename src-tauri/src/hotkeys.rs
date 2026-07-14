@@ -10,7 +10,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
         RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
@@ -26,6 +26,12 @@ const HOTKEY_EVENT: &str = "hotkeys://state";
 const HOTKEY_MODE_1_ID: i32 = 101;
 const HOTKEY_MODE_2_ID: i32 = 102;
 const HOTKEY_MODE_3_ID: i32 = 103;
+const HOTKEY_MOVE_UP_ID: i32 = 104;
+const HOTKEY_MOVE_DOWN_ID: i32 = 105;
+const HOTKEY_MOVE_RIGHT_ID: i32 = 106;
+const HOTKEY_MOVE_LEFT_ID: i32 = 107;
+const HOTKEY_TOGGLE_WINDOW_ID: i32 = 108;
+const WINDOW_MOVE_STEP: i32 = 50;
 const HOTKEY_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const HOTKEY_SETTINGS_FILE: &str = "hotkeys.json";
 
@@ -112,6 +118,19 @@ enum HotkeyAction {
     Mode1,
     Mode2,
     Mode3,
+    MoveUp,
+    MoveDown,
+    MoveRight,
+    MoveLeft,
+    ToggleWindow,
+}
+
+#[derive(Clone, Copy)]
+enum WindowMoveDirection {
+    Up,
+    Down,
+    Right,
+    Left,
 }
 
 enum HotkeyCommand {
@@ -269,7 +288,7 @@ fn dispatch_hotkey(app: AppHandle, action: HotkeyAction) {
                 let result = match action {
                     HotkeyAction::Mode1 => automation::run_mode_1_reserved(&app, permit),
                     HotkeyAction::Mode2 => automation::run_mode_2_reserved(&app, permit),
-                    HotkeyAction::Mode3 => unreachable!(),
+                    _ => unreachable!(),
                 };
                 report_hotkey_result(&app, result);
             });
@@ -290,6 +309,98 @@ fn dispatch_hotkey(app: AppHandle, action: HotkeyAction) {
                 report_hotkey_result(&app, result);
             });
         }
+        HotkeyAction::MoveUp => {
+            report_hotkey_result(&app, move_main_window(&app, WindowMoveDirection::Up))
+        }
+        HotkeyAction::MoveDown => {
+            report_hotkey_result(&app, move_main_window(&app, WindowMoveDirection::Down))
+        }
+        HotkeyAction::MoveRight => {
+            report_hotkey_result(&app, move_main_window(&app, WindowMoveDirection::Right))
+        }
+        HotkeyAction::MoveLeft => {
+            report_hotkey_result(&app, move_main_window(&app, WindowMoveDirection::Left))
+        }
+        HotkeyAction::ToggleWindow => report_hotkey_result(&app, toggle_main_window(&app)),
+    }
+}
+
+fn move_main_window(app: &AppHandle, direction: WindowMoveDirection) -> Result<(), String> {
+    let window = app
+        .get_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "Main window is unavailable.".to_string())?;
+    let position = window
+        .outer_position()
+        .map_err(|error| format!("Failed to read the main window position: {error}"))?;
+    let size = window
+        .outer_size()
+        .map_err(|error| format!("Failed to read the main window size: {error}"))?;
+    let monitor = window
+        .current_monitor()
+        .map_err(|error| format!("Failed to find the current monitor: {error}"))?
+        .ok_or_else(|| "No monitor contains the main window.".to_string())?;
+    let work_area = monitor.work_area();
+    let (delta_x, delta_y) = match direction {
+        WindowMoveDirection::Up => (0, -WINDOW_MOVE_STEP),
+        WindowMoveDirection::Down => (0, WINDOW_MOVE_STEP),
+        WindowMoveDirection::Right => (WINDOW_MOVE_STEP, 0),
+        WindowMoveDirection::Left => (-WINDOW_MOVE_STEP, 0),
+    };
+    let next_x = clamped_window_axis(
+        position.x,
+        delta_x,
+        work_area.position.x,
+        work_area.size.width,
+        size.width,
+    );
+    let next_y = clamped_window_axis(
+        position.y,
+        delta_y,
+        work_area.position.y,
+        work_area.size.height,
+        size.height,
+    );
+
+    window
+        .set_position(PhysicalPosition::new(next_x, next_y))
+        .map_err(|error| format!("Failed to move the main window: {error}"))
+}
+
+fn clamped_window_axis(
+    position: i32,
+    delta: i32,
+    work_origin: i32,
+    work_size: u32,
+    window_size: u32,
+) -> i32 {
+    let minimum = i64::from(work_origin);
+    let maximum = (minimum + i64::from(work_size) - i64::from(window_size)).max(minimum);
+
+    (i64::from(position) + i64::from(delta)).clamp(minimum, maximum) as i32
+}
+
+fn toggle_main_window(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| "Main window is unavailable.".to_string())?;
+    let is_visible = window
+        .is_visible()
+        .map_err(|error| format!("Failed to read main window visibility: {error}"))?;
+
+    if is_visible {
+        window
+            .hide()
+            .map_err(|error| format!("Failed to hide the main window: {error}"))
+    } else {
+        window
+            .show()
+            .map_err(|error| format!("Failed to show the main window: {error}"))?;
+        window
+            .unminimize()
+            .map_err(|error| format!("Failed to restore the main window: {error}"))?;
+        window
+            .set_focus()
+            .map_err(|error| format!("Failed to focus the main window: {error}"))
     }
 }
 
@@ -390,6 +501,41 @@ fn default_hotkeys() -> Vec<HotkeyBinding> {
             action: HotkeyAction::Mode3,
             accelerator: "Ctrl+Shift+S".to_string(),
         },
+        HotkeyBinding {
+            id: HOTKEY_MOVE_UP_ID,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            vk: 0x26,
+            action: HotkeyAction::MoveUp,
+            accelerator: "Ctrl+Up".to_string(),
+        },
+        HotkeyBinding {
+            id: HOTKEY_MOVE_DOWN_ID,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            vk: 0x28,
+            action: HotkeyAction::MoveDown,
+            accelerator: "Ctrl+Down".to_string(),
+        },
+        HotkeyBinding {
+            id: HOTKEY_MOVE_RIGHT_ID,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            vk: 0x27,
+            action: HotkeyAction::MoveRight,
+            accelerator: "Ctrl+Right".to_string(),
+        },
+        HotkeyBinding {
+            id: HOTKEY_MOVE_LEFT_ID,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            vk: 0x25,
+            action: HotkeyAction::MoveLeft,
+            accelerator: "Ctrl+Left".to_string(),
+        },
+        HotkeyBinding {
+            id: HOTKEY_TOGGLE_WINDOW_ID,
+            modifiers: HOT_KEY_MODIFIERS(MOD_CONTROL.0),
+            vk: 0xDC,
+            action: HotkeyAction::ToggleWindow,
+            accelerator: "Ctrl+\\".to_string(),
+        },
     ]
 }
 
@@ -398,10 +544,11 @@ fn hotkey_bindings_from_request(
 ) -> Result<Vec<HotkeyBinding>, String> {
     let mut bindings = Vec::new();
 
-    if request.bindings.len() != 3 {
-        return Err(
-            "Shortcut settings must include exactly three automation shortcuts.".to_string(),
-        );
+    if request.bindings.len() != default_hotkeys().len() {
+        return Err(format!(
+            "Shortcut settings must include exactly {} shortcuts.",
+            default_hotkeys().len()
+        ));
     }
 
     for binding in &request.bindings {
@@ -456,20 +603,45 @@ fn load_hotkey_settings(app: &AppHandle) -> Result<Option<Vec<HotkeyBinding>>, S
             path.display()
         )
     })?;
-    let request = HotkeySettingsRequest {
-        bindings: settings
-            .bindings
-            .into_iter()
-            .map(|binding| HotkeyBindingRequest {
-                action: binding.action,
-                accelerator: binding.accelerator,
-            })
-            .collect(),
-    };
+    let request = merge_saved_hotkey_settings(settings)?;
 
     hotkey_bindings_from_request(&request)
         .map(Some)
         .map_err(|message| format!("Saved shortcut settings are invalid: {message}"))
+}
+
+fn merge_saved_hotkey_settings(
+    settings: StoredHotkeySettings,
+) -> Result<HotkeySettingsRequest, String> {
+    let mut bindings: Vec<HotkeyBindingRequest> = default_hotkeys()
+        .into_iter()
+        .map(|binding| HotkeyBindingRequest {
+            action: binding.action.as_str().to_string(),
+            accelerator: binding.accelerator,
+        })
+        .collect();
+    let mut seen_actions = Vec::new();
+
+    for saved_binding in settings.bindings {
+        let action = HotkeyAction::from_str(&saved_binding.action)
+            .ok_or_else(|| format!("Unknown shortcut action `{}`.", saved_binding.action))?;
+
+        if seen_actions.contains(&action) {
+            return Err(format!(
+                "Duplicate shortcut action `{}`.",
+                saved_binding.action
+            ));
+        }
+        seen_actions.push(action);
+
+        let binding = bindings
+            .iter_mut()
+            .find(|binding| binding.action == action.as_str())
+            .expect("every hotkey action has a default binding");
+        binding.accelerator = saved_binding.accelerator;
+    }
+
+    Ok(HotkeySettingsRequest { bindings })
 }
 
 fn save_hotkey_settings(app: &AppHandle, settings: &StoredHotkeySettings) -> Result<(), String> {
@@ -597,6 +769,11 @@ fn parse_virtual_key(value: &str) -> Option<(u32, String)> {
         "SPACE" => Some((0x20, "Space".to_string())),
         "TAB" => Some((0x09, "Tab".to_string())),
         "ESC" | "ESCAPE" => Some((0x1B, "Esc".to_string())),
+        "UP" | "ARROWUP" => Some((0x26, "Up".to_string())),
+        "DOWN" | "ARROWDOWN" => Some((0x28, "Down".to_string())),
+        "RIGHT" | "ARROWRIGHT" => Some((0x27, "Right".to_string())),
+        "LEFT" | "ARROWLEFT" => Some((0x25, "Left".to_string())),
+        "\\" | "BACKSLASH" => Some((0xDC, "\\".to_string())),
         _ => None,
     }
 }
@@ -608,6 +785,11 @@ impl HotkeyBinding {
                 HotkeyAction::Mode1 => "shortcutMode1",
                 HotkeyAction::Mode2 => "shortcutMode2",
                 HotkeyAction::Mode3 => "shortcutMode3",
+                HotkeyAction::MoveUp => "shortcutMoveUp",
+                HotkeyAction::MoveDown => "shortcutMoveDown",
+                HotkeyAction::MoveRight => "shortcutMoveRight",
+                HotkeyAction::MoveLeft => "shortcutMoveLeft",
+                HotkeyAction::ToggleWindow => "shortcutToggleWindow",
             },
             accelerator: self.accelerator.clone(),
             registered,
@@ -622,6 +804,11 @@ impl HotkeyAction {
             Self::Mode1 => "shortcutMode1",
             Self::Mode2 => "shortcutMode2",
             Self::Mode3 => "shortcutMode3",
+            Self::MoveUp => "shortcutMoveUp",
+            Self::MoveDown => "shortcutMoveDown",
+            Self::MoveRight => "shortcutMoveRight",
+            Self::MoveLeft => "shortcutMoveLeft",
+            Self::ToggleWindow => "shortcutToggleWindow",
         }
     }
 
@@ -630,6 +817,11 @@ impl HotkeyAction {
             "shortcutMode1" => Some(Self::Mode1),
             "shortcutMode2" => Some(Self::Mode2),
             "shortcutMode3" => Some(Self::Mode3),
+            "shortcutMoveUp" => Some(Self::MoveUp),
+            "shortcutMoveDown" => Some(Self::MoveDown),
+            "shortcutMoveRight" => Some(Self::MoveRight),
+            "shortcutMoveLeft" => Some(Self::MoveLeft),
+            "shortcutToggleWindow" => Some(Self::ToggleWindow),
             _ => None,
         }
     }
@@ -639,7 +831,62 @@ impl HotkeyAction {
             Self::Mode1 => HOTKEY_MODE_1_ID,
             Self::Mode2 => HOTKEY_MODE_2_ID,
             Self::Mode3 => HOTKEY_MODE_3_ID,
+            Self::MoveUp => HOTKEY_MOVE_UP_ID,
+            Self::MoveDown => HOTKEY_MOVE_DOWN_ID,
+            Self::MoveRight => HOTKEY_MOVE_RIGHT_ID,
+            Self::MoveLeft => HOTKEY_MOVE_LEFT_ID,
+            Self::ToggleWindow => HOTKEY_TOGGLE_WINDOW_ID,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_window_shortcut_keys() {
+        assert_eq!(parse_accelerator("Ctrl+Up").unwrap().1, 0x26);
+        assert_eq!(parse_accelerator("Ctrl+Down").unwrap().1, 0x28);
+        assert_eq!(parse_accelerator("Ctrl+Right").unwrap().1, 0x27);
+        assert_eq!(parse_accelerator("Ctrl+Left").unwrap().1, 0x25);
+        assert_eq!(parse_accelerator("Ctrl+\\").unwrap().1, 0xDC);
+    }
+
+    #[test]
+    fn adds_new_defaults_to_legacy_three_shortcut_settings() {
+        let settings = StoredHotkeySettings {
+            bindings: vec![
+                StoredHotkeyBinding {
+                    action: "shortcutMode1".to_string(),
+                    accelerator: "Alt+1".to_string(),
+                },
+                StoredHotkeyBinding {
+                    action: "shortcutMode2".to_string(),
+                    accelerator: "Alt+2".to_string(),
+                },
+                StoredHotkeyBinding {
+                    action: "shortcutMode3".to_string(),
+                    accelerator: "Alt+3".to_string(),
+                },
+            ],
+        };
+
+        let request = merge_saved_hotkey_settings(settings).unwrap();
+        let bindings = hotkey_bindings_from_request(&request).unwrap();
+
+        assert_eq!(bindings.len(), 8);
+        assert_eq!(bindings[0].accelerator, "Alt+1");
+        assert_eq!(bindings[3].accelerator, "Ctrl+Up");
+        assert_eq!(bindings[7].accelerator, "Ctrl+\\");
+    }
+
+    #[test]
+    fn clamps_window_movement_to_monitor_work_area() {
+        assert_eq!(clamped_window_axis(100, -50, 100, 1000, 400), 100);
+        assert_eq!(clamped_window_axis(650, 50, 100, 1000, 400), 700);
+        assert_eq!(clamped_window_axis(700, 50, 100, 1000, 400), 700);
+        assert_eq!(clamped_window_axis(250, 50, 100, 200, 400), 100);
     }
 }
 

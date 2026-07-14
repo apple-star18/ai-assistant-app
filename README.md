@@ -17,7 +17,8 @@ The application is designed around a narrow native boundary: the ChatGPT web exp
 - Home resets automation and caption collection; Refresh preserves and restores prepared prompt text
 - Optional setting to combine an existing ChatGPT prompt with the next Mode 1 or Mode 2 caption batch
 - Primary-display screenshot capture using Win32 GDI
-- Global `Ctrl+Enter`, `Ctrl+Shift+Enter`, and `Ctrl+Shift+S` shortcuts
+- Configurable global automation shortcuts: `Ctrl+Enter`, `Ctrl+Shift+Enter`, and `Ctrl+Shift+S`
+- Configurable global window shortcuts: `Ctrl+Arrow` moves the window by 50 pixels and `Ctrl+\\` hides or shows it
 - Typed frontend IPC wrappers for Tauri commands
 
 ## Architecture
@@ -146,7 +147,8 @@ The current bundle target is NSIS.
 7. Test `Ctrl+Enter` for caption submit.
 8. Test `Ctrl+Shift+Enter` for screenshot plus caption upload and submit.
 9. Test `Ctrl+Shift+S` for screenshot upload only.
-10. Confirm temporary screenshot files do not accumulate after successful upload.
+10. Test `Ctrl+Arrow` window movement and `Ctrl+\\` window visibility toggle.
+11. Confirm temporary screenshot files do not accumulate after successful upload.
 
 ## Known Risks
 
