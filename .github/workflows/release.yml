@@ -1,0 +1,75 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish NSIS installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Verify release versions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.ref_name }}"
+          $tauriVersion = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
+          $packageVersion = (Get-Content "package.json" | ConvertFrom-Json).version
+          $cargoMetadata = cargo metadata --format-version 1 --no-deps --manifest-path "src-tauri/Cargo.toml" | ConvertFrom-Json
+          $cargoVersion = $cargoMetadata.packages[0].version
+
+          if ($tag -ne "v$tauriVersion") {
+            throw "Tag $tag does not match Tauri version v$tauriVersion."
+          }
+
+          if ($packageVersion -ne $tauriVersion -or $cargoVersion -ne $tauriVersion) {
+            throw "Version mismatch: Tauri=$tauriVersion, package.json=$packageVersion, Cargo.toml=$cargoVersion."
+          }
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Test Rust
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build installer and publish release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: AI Assistant Browser ${{ github.ref_name }}
+          releaseBody: See the assets below to download the Windows installer.
+          generateReleaseNotes: true
+          releaseDraft: false
+          prerelease: false

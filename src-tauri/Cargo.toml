@@ -3,6 +3,7 @@ name = "ai-assistant-app"
 version = "0.1.0"
 description = "Desktop AI assistant application"
 authors = ["AI Assistant App Contributors"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.77"
 

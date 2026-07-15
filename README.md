@@ -184,6 +184,47 @@ Build the NSIS Windows installer:
 
     npm run tauri -- build
 
+## Automated GitHub Checks and Releases
+
+The repository includes two GitHub Actions workflows:
+
+- `CI` runs on every push and pull request to `main`. It installs dependencies, lints and builds the frontend, checks Rust formatting, and runs the Rust tests on a Windows runner.
+- `Publish Windows release` runs only when a version tag such as `v0.1.0` is pushed. It verifies that the tag matches every project version, builds the NSIS installer, creates a public GitHub Release, and uploads the installer automatically.
+
+### One-time GitHub setup
+
+1. Push this repository to GitHub and open it in the browser.
+2. Open **Settings > Actions > General**.
+3. Under **Actions permissions**, allow the actions used by the workflows: GitHub's official actions, `tauri-apps/tauri-action`, `dtolnay/rust-toolchain`, and `Swatinem/rust-cache`. Selecting **Allow all actions and reusable workflows** is the simplest option for a personal repository.
+4. Under **Workflow permissions**, keep the default read-only option. The CI workflow requests only `contents: read`, and the release workflow grants only the required `contents: write` permission to its own short-lived token.
+5. Open the **Actions** tab and confirm that the `CI` workflow is listed.
+6. Optional but recommended: open **Settings > Branches**, add a protection rule for `main`, require a pull request, and require the `Validate Windows app` check before merging.
+
+GitHub supplies the short-lived `GITHUB_TOKEN` automatically. Do not create a personal access token or commit credentials for this workflow.
+
+### Publish a release
+
+1. Choose the next semantic version, for example `0.1.0`.
+2. Set that exact version in all three files:
+   - `src-tauri/tauri.conf.json`
+   - `src-tauri/Cargo.toml`
+   - `package.json` (run `npm install --package-lock-only` afterward so `package-lock.json` matches)
+3. Commit the version change and push it to `main`.
+4. Wait for `CI` to pass in the GitHub **Actions** tab.
+5. Create and push a tag with a leading `v`:
+
+       git tag v0.1.0
+       git push origin v0.1.0
+
+6. Open **Actions > Publish Windows release** and follow the running job.
+7. When it succeeds, open the repository's **Releases** page. The new release and Windows NSIS setup executable are published there automatically.
+
+The tag must match the configured version exactly. For example, tag `v0.2.0` requires version `0.2.0` in all three project files. A mismatch stops the workflow before anything is published.
+
+### Windows signing
+
+The generated installer is usable without a signing certificate, but Windows SmartScreen may warn users about an unknown publisher. For public distribution, obtain a Windows code-signing certificate and store its certificate, password, and signing keys as encrypted GitHub Actions secrets. Never add signing credentials to the repository.
+
 ## Manual Test Checklist
 
 1. Launch the app and confirm the window stays above another application.
@@ -221,3 +262,7 @@ Build the NSIS Windows installer:
 - Restrict browser automation and navigation to explicitly allowed targets.
 - Keep screenshots in an application-controlled temporary location and delete them promptly.
 - Do not expose broad filesystem, shell, or arbitrary JavaScript execution capabilities to the remote page.
+
+## License
+
+This project is available under the [MIT License](LICENSE).
