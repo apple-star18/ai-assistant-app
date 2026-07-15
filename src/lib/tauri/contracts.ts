@@ -203,6 +203,10 @@ export interface CommandMap {
     args: undefined;
     response: CaptionState;
   };
+  captions_clear: {
+    args: undefined;
+    response: CaptionState;
+  };
   captions_submit_to_chatgpt: {
     args: undefined;
     response: CaptionState;

@@ -41,6 +41,7 @@ pub fn run() {
             captions::captions_get_state,
             captions::captions_start,
             captions::captions_stop,
+            captions::captions_clear,
             captions::captions_submit_to_chatgpt,
             automation::automation_get_state,
             automation::automation_get_preferences,

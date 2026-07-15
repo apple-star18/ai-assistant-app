@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import {
+  clearCaptions,
   closeMainWindow,
   getAutomationState,
   focusBrowser,
@@ -416,13 +417,13 @@ function BrowserWindow() {
       browserState.lastError ??
       (automationState.isRunning
         ? 'Automation running'
-        : captionState.pendingCaptionText || captionState.latestCaption || statusText),
+        : captionState.pendingCaptionText || captionState.currentCaptionText || statusText),
     [
       automationState.isRunning,
       automationState.lastError,
       browserState.lastError,
       captionState.lastError,
-      captionState.latestCaption,
+      captionState.currentCaptionText,
       captionState.pendingCaptionText,
       commandError,
       hotkeyState.lastError,
@@ -495,6 +496,17 @@ function BrowserWindow() {
       const nextState = await submitCaptionsToChatGpt();
       setCaptionState(nextState);
       await focusBrowser();
+    } catch (error) {
+      setCommandError(getErrorMessage(error));
+    }
+  }
+
+  async function clearCollectedCaptions() {
+    setCommandError(null);
+
+    try {
+      const nextState = await clearCaptions();
+      setCaptionState(nextState);
     } catch (error) {
       setCommandError(getErrorMessage(error));
     }
@@ -786,6 +798,17 @@ function BrowserWindow() {
           </button>
 
           <button
+            className="caption-clear-button"
+            type="button"
+            title="Clear collected captions and start a new batch"
+            aria-label="Clear collected captions"
+            disabled={!captionState.pendingCaptionText && !captionState.currentCaptionText}
+            onClick={() => void clearCollectedCaptions()}
+          >
+            <ClearCaptionsIcon />
+          </button>
+
+          <button
             className="caption-submit-button"
             type="button"
             title="Send captions"
@@ -893,6 +916,16 @@ function SendIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
       <path d="M4 12 20 4l-5 16-3.2-6.8L4 12Z" />
       <path d="m11.8 13.2 3.6-3.6" />
+    </svg>
+  );
+}
+
+function ClearCaptionsIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="m4.5 15.5 8.8-10a2 2 0 0 1 2.8-.2l2.6 2.3a2 2 0 0 1 .2 2.8l-7.1 8.1H7.2l-2.5-2.2a.6.6 0 0 1-.2-.8Z" />
+      <path d="m10 9.3 6 5.2" />
+      <path d="M11.8 18.5h7.7" />
     </svg>
   );
 }

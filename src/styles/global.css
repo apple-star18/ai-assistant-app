@@ -272,6 +272,7 @@ input:focus-visible {
 }
 
 .caption-button,
+.caption-clear-button,
 .caption-submit-button,
 .settings-button,
 .protection-button,
@@ -290,6 +291,14 @@ input:focus-visible {
 
 .caption-button:hover {
   background: #183126;
+}
+
+.caption-clear-button {
+  color: #f3d7c9;
+}
+
+.caption-clear-button:hover:not(:disabled) {
+  background: #35231f;
 }
 
 .caption-submit-button {

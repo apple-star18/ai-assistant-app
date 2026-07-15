@@ -123,6 +123,10 @@ export function stopCaptions() {
   return invokeCommand('captions_stop');
 }
 
+export function clearCaptions() {
+  return invokeCommand('captions_clear');
+}
+
 export function submitCaptionsToChatGpt() {
   return invokeCommand('captions_submit_to_chatgpt');
 }
