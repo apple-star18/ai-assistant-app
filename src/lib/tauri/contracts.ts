@@ -18,6 +18,7 @@ export interface BrowserState {
   isLoading: boolean;
   isContentProtected: boolean;
   windowOpacity: number;
+  browserScale: number;
   lastDownload: BrowserDownload | null;
   lastError: string | null;
 }
@@ -29,6 +30,15 @@ export interface BrowserTransparencyOverlayRequest {
   width: number;
   height: number;
   opacityPercent: number;
+}
+
+export interface BrowserScaleOverlayRequest {
+  isOpen: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  scalePercent: number;
 }
 
 export interface BrowserSettingsOverlayRequest {
@@ -174,6 +184,14 @@ export interface CommandMap {
     };
     response: BrowserState;
   };
+  browser_set_scale: {
+    args: {
+      request: {
+        scale: number;
+      };
+    };
+    response: BrowserState;
+  };
   browser_set_settings_overlay: {
     args: {
       request: BrowserSettingsOverlayRequest;
@@ -189,6 +207,12 @@ export interface CommandMap {
   browser_set_transparency_overlay: {
     args: {
       request: BrowserTransparencyOverlayRequest;
+    };
+    response: undefined;
+  };
+  browser_set_scale_overlay: {
+    args: {
+      request: BrowserScaleOverlayRequest;
     };
     response: undefined;
   };

@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type {
   AutomationState,
   BrowserProfileOverlayRequest,
+  BrowserScaleOverlayRequest,
   BrowserSettingsOverlayRequest,
   BrowserState,
   BrowserTransparencyOverlayRequest,
@@ -94,8 +95,20 @@ export function setBrowserWindowOpacity(opacity: number) {
   });
 }
 
+export function setBrowserScale(scale: number) {
+  return invokeCommand('browser_set_scale', {
+    request: { scale },
+  });
+}
+
 export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverlayRequest) {
   return invokeCommand('browser_set_transparency_overlay', {
+    request,
+  });
+}
+
+export function setBrowserScaleOverlay(request: BrowserScaleOverlayRequest) {
+  return invokeCommand('browser_set_scale_overlay', {
     request,
   });
 }
@@ -198,6 +211,12 @@ export function listenToProfileState(onState: (state: ProfileState) => void) {
   });
 }
 
+export function listenToBrowserFocused(onFocus: () => void) {
+  return listen('browser://focused', () => {
+    onFocus();
+  });
+}
+
 export function listenToSettingsOverlayClosed(onClose: () => void) {
   return listen('settings-overlay://closed', () => {
     onClose();
@@ -212,6 +231,12 @@ export function listenToProfileOverlayClosed(onClose: () => void) {
 
 export function listenToTransparencyOverlayClosed(onClose: () => void) {
   return listen('transparency-overlay://closed', () => {
+    onClose();
+  });
+}
+
+export function listenToScaleOverlayClosed(onClose: () => void) {
+  return listen('scale-overlay://closed', () => {
     onClose();
   });
 }

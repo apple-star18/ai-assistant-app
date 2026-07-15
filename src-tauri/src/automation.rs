@@ -1,6 +1,4 @@
 use std::{
-    fs,
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard,
@@ -9,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{browser, captions, profiles, screenshot};
@@ -23,7 +21,6 @@ const CHATGPT_SUBMIT_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTACHMENT_DISCARD_TIMEOUT: Duration = Duration::from_secs(3);
 const MODE_3_COORDINATOR_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const AUTOMATION_RESET_TIMEOUT: Duration = Duration::from_secs(7);
-const AUTOMATION_SETTINGS_FILE: &str = "automation-settings.json";
 const AUTOMATION_CANCELLED: &str = "Automation was cancelled by browser navigation.";
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,8 +79,6 @@ pub struct AutomationStore {
     refresh_prompt: Mutex<String>,
     refresh_restore_pending: AtomicBool,
     refresh_prompt_restored: AtomicBool,
-    previous_submitted_prompt: Mutex<String>,
-    preferences: Mutex<AutomationPreferences>,
 }
 
 pub(crate) struct CaptionWorkflowPermit {
@@ -95,18 +90,6 @@ pub(crate) struct CaptionWorkflowPermit {
 struct CancellationToken {
     epoch: Arc<AtomicU64>,
     expected: u64,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AutomationPreferences {
-    keep_existing_prompt: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AutomationPreferencesRequest {
-    keep_existing_prompt: bool,
 }
 
 #[derive(Debug, Default)]
@@ -141,14 +124,6 @@ impl CancellationToken {
 }
 
 type CommandResult<T> = Result<T, AutomationCommandError>;
-
-pub fn setup(app: &AppHandle) {
-    if let Ok(Some(preferences)) = load_automation_preferences(app) {
-        if let Ok(mut stored) = app.state::<AutomationStore>().preferences.lock() {
-            *stored = preferences;
-        }
-    }
-}
 
 pub fn cancelled_error() -> String {
     AUTOMATION_CANCELLED.to_string()
@@ -208,35 +183,6 @@ pub fn run_mode_1(app: &AppHandle) -> Result<(), String> {
     run_mode_1_reserved(app, permit)
 }
 
-#[tauri::command]
-pub fn automation_get_preferences(
-    state: State<'_, AutomationStore>,
-) -> CommandResult<AutomationPreferences> {
-    state
-        .preferences
-        .lock()
-        .map(|preferences| *preferences)
-        .map_err(|_| AutomationCommandError::state_unavailable())
-}
-
-#[tauri::command]
-pub fn automation_apply_preferences(
-    app: AppHandle,
-    state: State<'_, AutomationStore>,
-    request: AutomationPreferencesRequest,
-) -> CommandResult<AutomationPreferences> {
-    let preferences = AutomationPreferences {
-        keep_existing_prompt: request.keep_existing_prompt,
-    };
-    save_automation_preferences(&app, &preferences)
-        .map_err(AutomationCommandError::automation_failed)?;
-    *state
-        .preferences
-        .lock()
-        .map_err(|_| AutomationCommandError::state_unavailable())? = preferences;
-    Ok(preferences)
-}
-
 pub(crate) fn run_mode_1_reserved(
     app: &AppHandle,
     permit: CaptionWorkflowPermit,
@@ -265,12 +211,7 @@ pub(crate) fn run_mode_1_reserved(
             Ok(UploadState::Idle)
         })();
 
-        finish_prepared_prompt(
-            app,
-            &prompt_text,
-            result.is_ok(),
-            permit.token.is_cancelled(),
-        );
+        finish_prepared_prompt(app, result.is_ok(), permit.token.is_cancelled());
         result
     })
     .map(|_| ())
@@ -339,12 +280,7 @@ pub(crate) fn run_mode_2_reserved(
             let prompt_text = take_and_prepare_caption_prompt(app, &permit.token, true)?;
 
             let result = run_mode_2_prompt_workflow(app, &permit.token, &prompt_text);
-            finish_prepared_prompt(
-                app,
-                &prompt_text,
-                result.is_ok(),
-                permit.token.is_cancelled(),
-            );
+            finish_prepared_prompt(app, result.is_ok(), permit.token.is_cancelled());
             result
         },
     )
@@ -546,23 +482,7 @@ fn prepare_caption_prompt_body(
         }
     }
 
-    let keep_existing = automation
-        .preferences
-        .lock()
-        .map_err(|_| "Automation preferences are unavailable.".to_string())?
-        .keep_existing_prompt;
-
-    if !keep_existing {
-        return Ok(new_caption_text.to_string());
-    }
-
-    let existing = automation
-        .previous_submitted_prompt
-        .lock()
-        .map_err(|_| "Previous submitted prompt memory is unavailable.".to_string())?
-        .clone();
-
-    Ok(merge_prompt_text(&existing, new_caption_text))
+    Ok(new_caption_text.to_string())
 }
 
 fn append_active_profile_prompt(prompt: &str, profile_prompt: &str) -> String {
@@ -595,7 +515,7 @@ fn remember_prepared_prompt(app: &AppHandle, prompt_text: &str) -> Result<(), St
     Ok(())
 }
 
-fn finish_prepared_prompt(app: &AppHandle, prompt_text: &str, submitted: bool, cancelled: bool) {
+fn finish_prepared_prompt(app: &AppHandle, submitted: bool, cancelled: bool) {
     let automation = app.state::<AutomationStore>();
     if submitted || !cancelled {
         if let Ok(mut prompt) = automation.prepared_prompt.lock() {
@@ -604,9 +524,6 @@ fn finish_prepared_prompt(app: &AppHandle, prompt_text: &str, submitted: bool, c
         }
     }
     if submitted {
-        if let Ok(mut prompt) = automation.previous_submitted_prompt.lock() {
-            *prompt = prompt_text.to_string();
-        }
         if let Ok(mut prompt) = automation.refresh_prompt.lock() {
             prompt.clear();
             prompt.shrink_to_fit();
@@ -717,11 +634,7 @@ pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
     let _guard = begin_navigation_reset(app)?;
     wait_for_automation_workers(app)?;
     let automation = app.state::<AutomationStore>();
-    for memory in [
-        &automation.prepared_prompt,
-        &automation.refresh_prompt,
-        &automation.previous_submitted_prompt,
-    ] {
+    for memory in [&automation.prepared_prompt, &automation.refresh_prompt] {
         let mut text = memory
             .lock()
             .map_err(|_| "Prompt memory is unavailable.".to_string())?;
@@ -787,41 +700,6 @@ pub fn restore_refresh_prompt_after_page_load(app: &AppHandle) {
                 thread::sleep(Duration::from_millis(500));
             }
         });
-}
-
-fn automation_preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|directory| directory.join(AUTOMATION_SETTINGS_FILE))
-        .map_err(|error| format!("Failed to resolve automation settings directory: {error}"))
-}
-
-fn load_automation_preferences(app: &AppHandle) -> Result<Option<AutomationPreferences>, String> {
-    let path = automation_preferences_path(app)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
-    serde_json::from_str(&contents)
-        .map(Some)
-        .map_err(|error| format!("Automation settings are invalid: {error}"))
-}
-
-fn save_automation_preferences(
-    app: &AppHandle,
-    preferences: &AutomationPreferences,
-) -> Result<(), String> {
-    let path = automation_preferences_path(app)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Automation settings path has no parent directory.".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
-    let contents = serde_json::to_string_pretty(preferences)
-        .map_err(|error| format!("Failed to serialize automation settings: {error}"))?;
-    fs::write(&path, contents)
-        .map_err(|error| format!("Failed to save {}: {error}", path.display()))
 }
 
 pub(crate) fn try_reserve_caption_workflow(
@@ -1184,13 +1062,6 @@ impl AutomationCommandError {
         Self {
             code: "automation_failed",
             message,
-        }
-    }
-
-    fn state_unavailable() -> Self {
-        Self {
-            code: "state_unavailable",
-            message: "Automation state is unavailable.".to_string(),
         }
     }
 }

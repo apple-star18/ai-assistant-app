@@ -16,7 +16,7 @@
         "title": "AI Assistant Browser",
         "width": 700,
         "height": 800,
-        "minWidth": 700,
+        "minWidth": 520,
         "minHeight": 640,
         "alwaysOnTop": true,
         "decorations": false,

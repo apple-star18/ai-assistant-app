@@ -13,7 +13,6 @@ let profileState = {
   nextId: 1,
 };
 let selectedProfileId = null;
-let isClosing = false;
 
 function invoke(command, payload) {
   return window.__TAURI_INTERNALS__.invoke(command, payload);
@@ -212,28 +211,6 @@ async function activateProfile() {
   }
 }
 
-async function closeProfile() {
-  if (isClosing) {
-    return;
-  }
-
-  isClosing = true;
-  try {
-    await invoke('browser_set_profile_overlay', {
-      request: {
-        isOpen: false,
-        left: 0,
-        top: 0,
-        width: 1,
-        height: 1,
-        indicatorLeft: 14,
-      },
-    });
-  } finally {
-    isClosing = false;
-  }
-}
-
 formElement.addEventListener('submit', (event) => {
   void saveProfile(event);
 });
@@ -242,9 +219,6 @@ addButton.addEventListener('click', () => {
 });
 activateButton.addEventListener('click', () => {
   void activateProfile();
-});
-window.addEventListener('blur', () => {
-  void closeProfile();
 });
 
 window.setProfileIndicatorLeft = (indicatorLeft) => {

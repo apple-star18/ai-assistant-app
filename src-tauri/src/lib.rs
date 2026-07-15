@@ -17,7 +17,6 @@ pub fn run() {
         .manage(profiles::ProfileStore::default())
         .setup(|app| {
             browser::setup(app)?;
-            automation::setup(app.handle());
             hotkeys::setup(app.handle());
             profiles::setup(app.handle());
             Ok(())
@@ -37,15 +36,15 @@ pub fn run() {
             browser::browser_set_settings_overlay,
             browser::browser_set_profile_overlay,
             browser::browser_set_transparency_overlay,
+            browser::browser_set_scale_overlay,
             browser::browser_set_window_opacity,
+            browser::browser_set_scale,
             captions::captions_get_state,
             captions::captions_start,
             captions::captions_stop,
             captions::captions_clear,
             captions::captions_submit_to_chatgpt,
             automation::automation_get_state,
-            automation::automation_get_preferences,
-            automation::automation_apply_preferences,
             automation::automation_shortcut_mode_1,
             automation::automation_shortcut_mode_2,
             automation::automation_shortcut_mode_3,

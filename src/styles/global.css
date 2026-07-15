@@ -165,17 +165,30 @@ select:focus-visible {
 }
 
 .browser-toolbar {
-  display: flex;
-  min-height: 48px;
-  flex-wrap: wrap;
-  align-items: center;
-  align-content: center;
-  justify-content: center;
+  display: grid;
+  min-height: 82px;
+  grid-template-rows: repeat(2, 30px);
   gap: 6px;
   background: #07090d;
   overflow: visible;
   padding: 8px;
   user-select: none;
+}
+
+.toolbar-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar-primary-row {
+  justify-content: center;
+}
+
+.toolbar-secondary-row {
+  justify-content: center;
 }
 
 .browser-toolbar button {
@@ -211,38 +224,6 @@ select:focus-visible {
   cursor: not-allowed;
 }
 
-.window-title {
-  display: flex;
-  width: 118px;
-  min-width: 96px;
-  flex: 0 1 118px;
-  align-items: center;
-  gap: 6px;
-  color: #f4f6f8;
-  font-size: 0.82rem;
-  font-weight: 650;
-}
-
-.window-title span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.app-mark {
-  display: inline-grid;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 5px;
-  background: #236b52;
-  color: #ffffff;
-  font-size: 0.66rem;
-  font-weight: 800;
-}
-
 .navigation-controls {
   display: grid;
   flex: 0 0 auto;
@@ -251,9 +232,10 @@ select:focus-visible {
 }
 
 .address-bar {
-  width: clamp(240px, 38vw, 420px);
-  min-width: 180px;
-  flex: 0 1 auto;
+  width: 320px;
+  min-width: 140px;
+  max-width: 320px;
+  flex: 0 1 320px;
 }
 
 .address-bar input {
@@ -278,6 +260,7 @@ select:focus-visible {
 .settings-button,
 .protection-button,
 .transparency-button,
+.scale-button,
 .profile-button {
   width: 30px;
   min-width: 30px;
@@ -355,6 +338,24 @@ select:focus-visible {
 
 .transparency-button.adjusted {
   color: #f3eaff;
+}
+
+.scale-button {
+  color: #d9e7ff;
+}
+
+.scale-button:hover,
+.scale-button.adjusted {
+  background: #1c2940;
+}
+
+.scale-button.adjusted {
+  color: #e4edff;
+}
+
+.browser-toolbar .scale-button svg circle {
+  fill: none;
+  stroke: currentColor;
 }
 
 .browser-status-bar {
@@ -485,7 +486,6 @@ select:focus-visible {
     gap: 6px;
   }
 
-  .window-title,
   .status-summary {
     display: none;
   }

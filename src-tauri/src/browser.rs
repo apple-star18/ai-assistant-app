@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::PathBuf,
     sync::mpsc,
     sync::{Mutex, MutexGuard},
@@ -13,6 +14,7 @@ use tauri::{
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
     Size, State, Url, WebviewUrl, Window, WindowEvent,
 };
+use webview2_com::FocusChangedEventHandler;
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowDisplayAffinity, GetWindowLongPtrW, SetLayeredWindowAttributes,
@@ -24,11 +26,14 @@ use crate::{automation, captions};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
+const SCALE_OVERLAY_WEBVIEW_LABEL: &str = "scale-overlay";
 const SETTINGS_OVERLAY_WEBVIEW_LABEL: &str = "settings-overlay";
 const PROFILE_OVERLAY_WEBVIEW_LABEL: &str = "profile-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
+const BROWSER_FOCUSED_EVENT: &str = "browser://focused";
+const BROWSER_SETTINGS_FILE: &str = "browser-settings.json";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
-const TOOLBAR_HEIGHT: f64 = 48.0;
+const TOOLBAR_HEIGHT: f64 = 82.0;
 const STATUS_BAR_HEIGHT: f64 = 36.0;
 const WINDOW_CONTENT_INSET: f64 = 12.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
@@ -38,6 +43,9 @@ const MAX_STATUS_BAR_HEIGHT: f64 = 160.0;
 const DEFAULT_WINDOW_OPACITY: f64 = 1.0;
 const MIN_WINDOW_OPACITY: f64 = 0.4;
 const MAX_WINDOW_OPACITY: f64 = 1.0;
+const DEFAULT_BROWSER_SCALE: f64 = 1.0;
+const MIN_BROWSER_SCALE: f64 = 0.5;
+const MAX_BROWSER_SCALE: f64 = 2.0;
 const SCRIPT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -48,6 +56,7 @@ pub struct BrowserSnapshot {
     is_loading: bool,
     is_content_protected: bool,
     window_opacity: f64,
+    browser_scale: f64,
     last_download: Option<DownloadSnapshot>,
     last_error: Option<String>,
 }
@@ -60,6 +69,7 @@ impl Default for BrowserSnapshot {
             is_loading: true,
             is_content_protected: false,
             window_opacity: DEFAULT_WINDOW_OPACITY,
+            browser_scale: DEFAULT_BROWSER_SCALE,
             last_download: None,
             last_error: None,
         }
@@ -126,6 +136,18 @@ pub struct SetWindowOpacityRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetBrowserScaleRequest {
+    scale: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserPreferences {
+    scale: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetTransparencyOverlayRequest {
     is_open: bool,
     left: f64,
@@ -133,6 +155,17 @@ pub struct SetTransparencyOverlayRequest {
     width: f64,
     height: f64,
     opacity_percent: u8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetScaleOverlayRequest {
+    is_open: bool,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    scale_percent: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +210,11 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let app_handle = app.handle().clone();
     let resize_app_handle = app.handle().clone();
     let profile_dir = browser_profile_dir(app)?;
+    let initial_browser_scale = load_browser_preferences(app.handle())
+        .ok()
+        .flatten()
+        .and_then(|preferences| validate_browser_scale(preferences.scale).ok())
+        .unwrap_or(DEFAULT_BROWSER_SCALE);
 
     let browser = WebviewBuilder::new(
         BROWSER_WEBVIEW_LABEL,
@@ -222,6 +260,23 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .as_ref()
         .window()
         .add_child(browser, bounds.position, bounds.size)?;
+    let browser_focus_app_handle = app.handle().clone();
+    browser.with_webview(move |webview| {
+        let focus_handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
+            let _ = browser_focus_app_handle.emit(BROWSER_FOCUSED_EVENT, ());
+            Ok(())
+        }));
+        let mut token = 0;
+        let _ = unsafe {
+            webview
+                .controller()
+                .add_GotFocus(&focus_handler, &mut token)
+        };
+    })?;
+    browser.set_zoom(initial_browser_scale)?;
+    update_snapshot(app.handle(), |snapshot| {
+        snapshot.browser_scale = initial_browser_scale;
+    });
     browser.show()?;
 
     let transparency_overlay = WebviewBuilder::new(
@@ -239,6 +294,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         LogicalSize::new(1.0, 1.0),
     )?;
     transparency_overlay.hide()?;
+
+    let scale_overlay = WebviewBuilder::new(
+        SCALE_OVERLAY_WEBVIEW_LABEL,
+        WebviewUrl::App("scale-overlay.html".into()),
+    )
+    .accept_first_mouse(true)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .focused(false);
+
+    let scale_overlay = main_window.as_ref().window().add_child(
+        scale_overlay,
+        LogicalPosition::new(0.0, 0.0),
+        LogicalSize::new(1.0, 1.0),
+    )?;
+    scale_overlay.hide()?;
 
     let settings_overlay = WebviewBuilder::new(
         SETTINGS_OVERLAY_WEBVIEW_LABEL,
@@ -451,6 +522,34 @@ pub fn browser_set_window_opacity(
 }
 
 #[tauri::command]
+pub fn browser_set_scale(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: SetBrowserScaleRequest,
+) -> CommandResult<BrowserSnapshot> {
+    let scale = validate_browser_scale(request.scale)?;
+    let browser = app
+        .get_webview(BROWSER_WEBVIEW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "webview_unavailable",
+            message: "Browser WebView is not available.".to_string(),
+        })?;
+
+    save_browser_preferences(&app, &BrowserPreferences { scale })
+        .map_err(BrowserCommandError::storage)?;
+    browser
+        .set_zoom(scale)
+        .map_err(BrowserCommandError::from_tauri)?;
+
+    update_snapshot(&app, |snapshot| {
+        snapshot.browser_scale = scale;
+        snapshot.last_error = None;
+    });
+
+    Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
 pub fn browser_set_transparency_overlay(
     app: AppHandle,
     request: SetTransparencyOverlayRequest,
@@ -489,6 +588,60 @@ pub fn browser_set_transparency_overlay(
     overlay
         .eval(format!(
             "window.setOpacityPercent && window.setOpacityPercent({opacity_percent});"
+        ))
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_focus()
+        .map_err(BrowserCommandError::from_tauri)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn browser_set_scale_overlay(
+    app: AppHandle,
+    request: SetScaleOverlayRequest,
+) -> CommandResult<()> {
+    let overlay = app
+        .get_webview(SCALE_OVERLAY_WEBVIEW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "webview_unavailable",
+            message: "Scale overlay WebView is not available.".to_string(),
+        })?;
+
+    if !request.is_open {
+        overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        let _ = app.emit("scale-overlay://closed", ());
+        return Ok(());
+    }
+
+    validate_overlay_rect(
+        request.left,
+        request.top,
+        request.width,
+        request.height,
+        "Scale overlay",
+    )?;
+    let scale_percent = request.scale_percent.clamp(50, 200);
+    let position = Position::Logical(LogicalPosition::new(
+        request.left.round(),
+        request.top.round(),
+    ));
+    let size = Size::Logical(LogicalSize::new(
+        request.width.round().max(1.0),
+        request.height.round().max(1.0),
+    ));
+
+    overlay
+        .set_auto_resize(false)
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_bounds(Rect { position, size })
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay.show().map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .eval(format!(
+            "window.setBrowserScalePercent && window.setBrowserScalePercent({scale_percent});"
         ))
         .map_err(BrowserCommandError::from_tauri)?;
     overlay
@@ -1008,6 +1161,22 @@ fn validate_window_opacity(opacity: f64) -> CommandResult<f64> {
     Ok(opacity)
 }
 
+fn validate_browser_scale(scale: f64) -> CommandResult<f64> {
+    if !scale.is_finite() {
+        return Err(BrowserCommandError::validation(
+            "Browser scale must be a finite number.",
+        ));
+    }
+
+    if !(MIN_BROWSER_SCALE..=MAX_BROWSER_SCALE).contains(&scale) {
+        return Err(BrowserCommandError::validation(
+            "Browser scale is outside the allowed range.",
+        ));
+    }
+
+    Ok(scale)
+}
+
 fn validate_overlay_bounds(request: &SetTransparencyOverlayRequest) -> CommandResult<()> {
     validate_overlay_rect(
         request.left,
@@ -1042,6 +1211,41 @@ fn validate_overlay_rect(
 
 fn browser_profile_dir(app: &App) -> tauri::Result<PathBuf> {
     Ok(app.path().app_data_dir()?.join("browser-profile"))
+}
+
+fn browser_preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|directory| directory.join(BROWSER_SETTINGS_FILE))
+        .map_err(|error| format!("Failed to resolve browser settings directory: {error}"))
+}
+
+fn load_browser_preferences(app: &AppHandle) -> Result<Option<BrowserPreferences>, String> {
+    let path = browser_preferences_path(app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+    serde_json::from_str(&contents)
+        .map(Some)
+        .map_err(|error| format!("Browser settings are invalid: {error}"))
+}
+
+fn save_browser_preferences(
+    app: &AppHandle,
+    preferences: &BrowserPreferences,
+) -> Result<(), String> {
+    let path = browser_preferences_path(app)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Browser settings path has no parent directory.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    let contents = serde_json::to_string_pretty(preferences)
+        .map_err(|error| format!("Failed to serialize browser settings: {error}"))?;
+    fs::write(&path, contents)
+        .map_err(|error| format!("Failed to save {}: {error}", path.display()))
 }
 
 fn sanitize_title(title: &str) -> String {
@@ -1101,6 +1305,13 @@ impl BrowserCommandError {
         Self {
             code: "native_error",
             message: error.to_string(),
+        }
+    }
+
+    fn storage(message: String) -> Self {
+        Self {
+            code: "storage_error",
+            message,
         }
     }
 
@@ -1656,7 +1867,9 @@ fn eval_json(app: &AppHandle, script: impl Into<String>) -> Result<Value, String
 
 #[cfg(test)]
 mod tests {
-    use super::{is_allowed_chatgpt_automation_url, is_allowed_navigation_url};
+    use super::{
+        is_allowed_chatgpt_automation_url, is_allowed_navigation_url, validate_browser_scale,
+    };
     use tauri::Url;
 
     #[test]
@@ -1698,5 +1911,15 @@ mod tests {
                 &Url::parse(url).expect("valid URL")
             ));
         }
+    }
+
+    #[test]
+    fn browser_scale_accepts_only_the_supported_range() {
+        assert_eq!(validate_browser_scale(0.5).unwrap(), 0.5);
+        assert_eq!(validate_browser_scale(1.0).unwrap(), 1.0);
+        assert_eq!(validate_browser_scale(2.0).unwrap(), 2.0);
+        assert!(validate_browser_scale(0.49).is_err());
+        assert!(validate_browser_scale(2.01).is_err());
+        assert!(validate_browser_scale(f64::NAN).is_err());
     }
 }

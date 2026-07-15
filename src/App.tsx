@@ -1,6 +1,7 @@
 import {
   FormEvent,
   MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -20,11 +21,13 @@ import {
   getProfileState,
   goBrowserBack,
   listenToAutomationState,
+  listenToBrowserFocused,
   listenToBrowserState,
   listenToCaptionState,
   listenToHotkeyState,
   listenToProfileState,
   listenToProfileOverlayClosed,
+  listenToScaleOverlayClosed,
   listenToSettingsOverlayClosed,
   listenToTransparencyOverlayClosed,
   minimizeMainWindow,
@@ -33,6 +36,7 @@ import {
   reloadBrowser,
   resizeBrowser,
   setBrowserProfileOverlay,
+  setBrowserScaleOverlay,
   setBrowserSettingsOverlay,
   setBrowserContentProtected,
   setBrowserTransparencyOverlay,
@@ -56,6 +60,7 @@ const initialBrowserState: BrowserState = {
   isLoading: true,
   isContentProtected: false,
   windowOpacity: 1,
+  browserScale: 1,
   lastDownload: null,
   lastError: null,
 };
@@ -94,8 +99,11 @@ const initialProfileState: ProfileState = {
 
 const TRANSPARENCY_CONTROL_WIDTH = 220;
 const TRANSPARENCY_CONTROL_MARGIN = 8;
-const TRANSPARENCY_OVERLAY_TOP = 46;
 const TRANSPARENCY_OVERLAY_HEIGHT = 43;
+const SCALE_CONTROL_WIDTH = 220;
+const SCALE_CONTROL_MARGIN = 8;
+const SCALE_OVERLAY_HEIGHT = 43;
+const DEFAULT_CONTROL_TOP = 82;
 const SETTINGS_OVERLAY_WIDTH = 332;
 const SETTINGS_OVERLAY_HEIGHT = 500;
 const SETTINGS_OVERLAY_MARGIN = 8;
@@ -127,6 +135,7 @@ function BrowserWindow() {
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const profileButtonRef = useRef<HTMLButtonElement | null>(null);
   const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
+  const scaleButtonRef = useRef<HTMLButtonElement | null>(null);
   const isAddressEditingRef = useRef(false);
   const [browserState, setBrowserState] = useState<BrowserState>(initialBrowserState);
   const [captionState, setCaptionState] = useState<CaptionState>(initialCaptionState);
@@ -138,9 +147,13 @@ function BrowserWindow() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isTransparencyOpen, setIsTransparencyOpen] = useState(false);
+  const [isScaleOpen, setIsScaleOpen] = useState(false);
   const [transparencyControlLeft, setTransparencyControlLeft] = useState(
     TRANSPARENCY_CONTROL_MARGIN,
   );
+  const [transparencyControlTop, setTransparencyControlTop] = useState(DEFAULT_CONTROL_TOP);
+  const [scaleControlLeft, setScaleControlLeft] = useState(SCALE_CONTROL_MARGIN);
+  const [scaleControlTop, setScaleControlTop] = useState(DEFAULT_CONTROL_TOP);
 
   useEffect(() => {
     let isMounted = true;
@@ -239,6 +252,26 @@ function BrowserWindow() {
 
   useEffect(() => {
     let isMounted = true;
+    const unlisten = listenToBrowserFocused(() => {
+      closeSettings();
+      closeProfile();
+      closeTransparencyControls();
+      closeScaleControls();
+    });
+    void unlisten.catch((error: unknown) => {
+      if (isMounted) {
+        setCommandError(getErrorMessage(error));
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      void unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
     const unlisten = listenToSettingsOverlayClosed(() => {
       setIsSettingsOpen(false);
     });
@@ -289,6 +322,23 @@ function BrowserWindow() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const unlisten = listenToScaleOverlayClosed(() => {
+      setIsScaleOpen(false);
+    });
+    void unlisten.catch((error: unknown) => {
+      if (isMounted) {
+        setCommandError(getErrorMessage(error));
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      void unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isTransparencyOpen) {
       return;
     }
@@ -313,6 +363,30 @@ function BrowserWindow() {
       window.visualViewport?.removeEventListener('resize', logTransparencyMetrics);
     };
   }, [isTransparencyOpen]);
+
+  useEffect(() => {
+    if (!isScaleOpen) {
+      return;
+    }
+
+    const updateScaleMetrics = () => {
+      updateScaleControlPosition();
+    };
+
+    updateScaleMetrics();
+    const firstFrame = window.requestAnimationFrame(updateScaleMetrics);
+    const settleTimer = window.setTimeout(updateScaleMetrics, 150);
+
+    window.addEventListener('resize', updateScaleMetrics);
+    window.visualViewport?.addEventListener('resize', updateScaleMetrics);
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('resize', updateScaleMetrics);
+      window.visualViewport?.removeEventListener('resize', updateScaleMetrics);
+    };
+  }, [isScaleOpen]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -440,14 +514,34 @@ function BrowserWindow() {
     void setBrowserTransparencyOverlay({
       isOpen: isTransparencyOpen,
       left: transparencyControlLeft + WINDOW_CONTENT_INSET,
-      top: TRANSPARENCY_OVERLAY_TOP + WINDOW_CONTENT_INSET,
+      top: transparencyControlTop + WINDOW_CONTENT_INSET,
       width: TRANSPARENCY_CONTROL_WIDTH,
       height: TRANSPARENCY_OVERLAY_HEIGHT,
       opacityPercent,
     }).catch((error: unknown) => {
       setCommandError(getErrorMessage(error));
     });
-  }, [browserState.windowOpacity, isTransparencyOpen, transparencyControlLeft]);
+  }, [
+    browserState.windowOpacity,
+    isTransparencyOpen,
+    transparencyControlLeft,
+    transparencyControlTop,
+  ]);
+
+  useEffect(() => {
+    const scalePercent = Math.round(browserState.browserScale * 100);
+
+    void setBrowserScaleOverlay({
+      isOpen: isScaleOpen,
+      left: scaleControlLeft + WINDOW_CONTENT_INSET,
+      top: scaleControlTop + WINDOW_CONTENT_INSET,
+      width: SCALE_CONTROL_WIDTH,
+      height: SCALE_OVERLAY_HEIGHT,
+      scalePercent,
+    }).catch((error: unknown) => {
+      setCommandError(getErrorMessage(error));
+    });
+  }, [browserState.browserScale, isScaleOpen, scaleControlLeft, scaleControlTop]);
 
   const statusText = useMemo(() => {
     if (browserState.isLoading) {
@@ -590,16 +684,88 @@ function BrowserWindow() {
     const nextIsOpen = !isTransparencyOpen;
 
     if (nextIsOpen) {
+      if (isSettingsOpen) {
+        closeSettings();
+      }
+      if (isProfileOpen) {
+        closeProfile();
+      }
+      if (isScaleOpen) {
+        closeScaleControls();
+      }
       updateTransparencyControlPosition();
     }
 
     setIsTransparencyOpen(nextIsOpen);
   }
 
+  function closeTransparencyControls() {
+    setIsTransparencyOpen(false);
+  }
+
+  function toggleScaleControls() {
+    const nextIsOpen = !isScaleOpen;
+
+    if (nextIsOpen) {
+      if (isSettingsOpen) {
+        closeSettings();
+      }
+      if (isProfileOpen) {
+        closeProfile();
+      }
+      if (isTransparencyOpen) {
+        closeTransparencyControls();
+      }
+      updateScaleControlPosition();
+    }
+
+    setIsScaleOpen(nextIsOpen);
+  }
+
+  function closeScaleControls() {
+    setIsScaleOpen(false);
+  }
+
+  function handleShellPointerDown(event: ReactPointerEvent<HTMLElement>) {
+    const target = event.target;
+
+    if (!(target instanceof Node)) {
+      return;
+    }
+
+    if (
+      settingsButtonRef.current?.contains(target) ||
+      profileButtonRef.current?.contains(target) ||
+      transparencyButtonRef.current?.contains(target) ||
+      scaleButtonRef.current?.contains(target)
+    ) {
+      return;
+    }
+
+    if (isSettingsOpen) {
+      closeSettings();
+    }
+    if (isProfileOpen) {
+      closeProfile();
+    }
+    if (isTransparencyOpen) {
+      closeTransparencyControls();
+    }
+    if (isScaleOpen) {
+      closeScaleControls();
+    }
+  }
+
   function openSettings() {
     setCommandError(null);
     if (isProfileOpen) {
       closeProfile();
+    }
+    if (isTransparencyOpen) {
+      closeTransparencyControls();
+    }
+    if (isScaleOpen) {
+      closeScaleControls();
     }
     setIsSettingsOpen(true);
   }
@@ -659,6 +825,12 @@ function BrowserWindow() {
     setCommandError(null);
     if (isSettingsOpen) {
       closeSettings();
+    }
+    if (isTransparencyOpen) {
+      closeTransparencyControls();
+    }
+    if (isScaleOpen) {
+      closeScaleControls();
     }
     setIsProfileOpen(true);
   }
@@ -733,12 +905,34 @@ function BrowserWindow() {
     );
 
     setTransparencyControlLeft(nextLeft);
+    setTransparencyControlTop(Math.round(topLayerRect.height));
+  }
+
+  function updateScaleControlPosition() {
+    if (!toolbarRef.current || !scaleButtonRef.current) {
+      return;
+    }
+
+    const topLayerRect = toolbarRef.current.getBoundingClientRect();
+    const buttonRect = scaleButtonRef.current.getBoundingClientRect();
+    const buttonCenter = buttonRect.left - topLayerRect.left + buttonRect.width / 2;
+    const maxLeft = Math.max(
+      SCALE_CONTROL_MARGIN,
+      topLayerRect.width - SCALE_CONTROL_WIDTH - SCALE_CONTROL_MARGIN,
+    );
+    const nextLeft = Math.round(
+      Math.min(maxLeft, Math.max(SCALE_CONTROL_MARGIN, buttonCenter - SCALE_CONTROL_WIDTH / 2)),
+    );
+
+    setScaleControlLeft(nextLeft);
+    setScaleControlTop(Math.round(topLayerRect.height));
   }
 
   return (
     <main
       className={browserState.isContentProtected ? 'browser-shell protected' : 'browser-shell'}
       aria-label="ChatGPT browser"
+      onPointerDownCapture={handleShellPointerDown}
     >
       <div ref={toolbarRef} className="browser-top-layer">
         <form
@@ -746,148 +940,163 @@ function BrowserWindow() {
           onMouseDown={handleToolbarMouseDown}
           onSubmit={handleNavigate}
         >
-          <div className="window-title">
-            <span className="app-mark" aria-hidden="true">
-              AI
-            </span>
-            <span>{browserState.title}</span>
+          <div className="toolbar-row toolbar-primary-row">
+            <div className="navigation-controls" aria-label="Navigation controls">
+              <button
+                type="button"
+                title="Back"
+                onClick={() => void runBrowserCommand(goBrowserBack)}
+              >
+                &#8592;
+              </button>
+              <button
+                type="button"
+                title="Refresh"
+                onClick={() => void runBrowserCommand(reloadBrowser)}
+              >
+                &#8635;
+              </button>
+              <button
+                type="button"
+                title="Home"
+                onClick={() => void runBrowserCommand(openBrowserHome)}
+              >
+                &#8962;
+              </button>
+            </div>
+
+            <label className="address-bar">
+              <span className="visually-hidden">URL</span>
+              <input
+                value={address}
+                inputMode="url"
+                spellCheck={false}
+                autoCapitalize="none"
+                onChange={(event) => setAddress(event.target.value)}
+                onFocus={(event) => {
+                  isAddressEditingRef.current = true;
+                  event.currentTarget.select();
+                }}
+                onBlur={() => {
+                  isAddressEditingRef.current = false;
+                }}
+              />
+            </label>
+
+            <div className="window-controls" aria-label="Window controls">
+              <button
+                className="window-minimize-button"
+                type="button"
+                title="Minimize"
+                aria-label="Minimize window"
+                onClick={() => void runWindowCommand(minimizeMainWindow)}
+              >
+                <span aria-hidden="true">&#8722;</span>
+              </button>
+              <button
+                className="window-close-button"
+                type="button"
+                title="Close"
+                aria-label="Close window"
+                onClick={() => void runWindowCommand(closeMainWindow)}
+              >
+                <span aria-hidden="true">&#215;</span>
+              </button>
+            </div>
           </div>
 
-          <div className="navigation-controls" aria-label="Navigation controls">
+          <div className="toolbar-row toolbar-secondary-row">
             <button
+              ref={settingsButtonRef}
+              className={isSettingsOpen ? 'settings-button active' : 'settings-button'}
               type="button"
-              title="Back"
-              onClick={() => void runBrowserCommand(goBrowserBack)}
+              title="Settings"
+              aria-expanded={isSettingsOpen}
+              onClick={isSettingsOpen ? closeSettings : openSettings}
             >
-              &#8592;
+              &#9881;
             </button>
+
             <button
+              ref={profileButtonRef}
+              className={isProfileOpen ? 'profile-button active' : 'profile-button'}
               type="button"
-              title="Refresh"
-              onClick={() => void runBrowserCommand(reloadBrowser)}
+              title="Profile"
+              aria-label="Open profiles"
+              aria-expanded={isProfileOpen}
+              onClick={isProfileOpen ? closeProfile : openProfile}
             >
-              &#8635;
+              <ProfileIcon />
             </button>
+
             <button
+              className={
+                browserState.isContentProtected
+                  ? 'protection-button protected'
+                  : 'protection-button'
+              }
               type="button"
-              title="Home"
-              onClick={() => void runBrowserCommand(openBrowserHome)}
+              title={
+                browserState.isContentProtected
+                  ? 'Content is hidden from screen capture.'
+                  : 'Content is visible to screen capture.'
+              }
+              aria-pressed={browserState.isContentProtected}
+              onClick={() => void toggleContentProtection()}
             >
-              &#8962;
+              {browserState.isContentProtected ? <EyeOffIcon /> : <EyeIcon />}
             </button>
-          </div>
 
-          <button
-            ref={settingsButtonRef}
-            className={isSettingsOpen ? 'settings-button active' : 'settings-button'}
-            type="button"
-            title="Settings"
-            aria-expanded={isSettingsOpen}
-            onClick={isSettingsOpen ? closeSettings : openSettings}
-          >
-            &#9881;
-          </button>
-
-          <button
-            ref={profileButtonRef}
-            className={isProfileOpen ? 'profile-button active' : 'profile-button'}
-            type="button"
-            title="Profile"
-            aria-label="Open profiles"
-            aria-expanded={isProfileOpen}
-            onClick={isProfileOpen ? closeProfile : openProfile}
-          >
-            <ProfileIcon />
-          </button>
-
-          <button
-            className={
-              browserState.isContentProtected ? 'protection-button protected' : 'protection-button'
-            }
-            type="button"
-            title={
-              browserState.isContentProtected
-                ? 'Content is hidden from screen capture.'
-                : 'Content is visible to screen capture.'
-            }
-            aria-pressed={browserState.isContentProtected}
-            onClick={() => void toggleContentProtection()}
-          >
-            {browserState.isContentProtected ? <EyeOffIcon /> : <EyeIcon />}
-          </button>
-
-          <button
-            id="transparency-button"
-            ref={transparencyButtonRef}
-            className={
-              browserState.windowOpacity < 1
-                ? 'transparency-button adjusted'
-                : 'transparency-button'
-            }
-            type="button"
-            title="Transparency"
-            aria-expanded={isTransparencyOpen}
-            onClick={toggleTransparencyControls}
-          >
-            <TransparencyIcon />
-          </button>
-
-          <label className="address-bar">
-            <span className="visually-hidden">URL</span>
-            <input
-              value={address}
-              inputMode="url"
-              spellCheck={false}
-              autoCapitalize="none"
-              onChange={(event) => setAddress(event.target.value)}
-              onFocus={(event) => {
-                isAddressEditingRef.current = true;
-                event.currentTarget.select();
-              }}
-              onBlur={() => {
-                isAddressEditingRef.current = false;
-              }}
-            />
-          </label>
-
-          <button
-            className="caption-button"
-            type="button"
-            title={captionState.isMonitoring ? 'Stop captions' : 'Start captions'}
-            onClick={() => void toggleCaptions()}
-          >
-            <CaptionsIcon />
-          </button>
-
-          <button
-            className="caption-clear-button"
-            type="button"
-            title="Clear collected captions and start a new batch"
-            aria-label="Clear collected captions"
-            disabled={!captionState.pendingCaptionText && !captionState.currentCaptionText}
-            onClick={() => void clearCollectedCaptions()}
-          >
-            <ClearCaptionsIcon />
-          </button>
-
-          <div className="window-controls" aria-label="Window controls">
             <button
-              className="window-minimize-button"
+              id="transparency-button"
+              ref={transparencyButtonRef}
+              className={
+                browserState.windowOpacity < 1
+                  ? 'transparency-button adjusted'
+                  : 'transparency-button'
+              }
               type="button"
-              title="Minimize"
-              aria-label="Minimize window"
-              onClick={() => void runWindowCommand(minimizeMainWindow)}
+              title="Transparency"
+              aria-expanded={isTransparencyOpen}
+              onClick={toggleTransparencyControls}
             >
-              <span aria-hidden="true">&#8722;</span>
+              <TransparencyIcon />
             </button>
+
             <button
-              className="window-close-button"
+              ref={scaleButtonRef}
+              className={
+                isScaleOpen || browserState.browserScale !== 1
+                  ? 'scale-button adjusted'
+                  : 'scale-button'
+              }
               type="button"
-              title="Close"
-              aria-label="Close window"
-              onClick={() => void runWindowCommand(closeMainWindow)}
+              title="Browser scale"
+              aria-label="Browser scale"
+              aria-expanded={isScaleOpen}
+              onClick={toggleScaleControls}
             >
-              <span aria-hidden="true">&#215;</span>
+              <ScaleIcon />
+            </button>
+
+            <button
+              className="caption-button"
+              type="button"
+              title={captionState.isMonitoring ? 'Stop captions' : 'Start captions'}
+              onClick={() => void toggleCaptions()}
+            >
+              <CaptionsIcon />
+            </button>
+
+            <button
+              className="caption-clear-button"
+              type="button"
+              title="Clear collected captions and start a new batch"
+              aria-label="Clear collected captions"
+              disabled={!captionState.pendingCaptionText && !captionState.currentCaptionText}
+              onClick={() => void clearCollectedCaptions()}
+            >
+              <ClearCaptionsIcon />
             </button>
           </div>
         </form>
@@ -976,6 +1185,15 @@ function TransparencyIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
       <path d="M12 3.5 7 10a6 6 0 1 0 10 0L12 3.5Z" />
       <path d="M8.8 15.5a4.4 4.4 0 0 0 6.4 0" />
+    </svg>
+  );
+}
+
+function ScaleIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <circle cx="10.5" cy="10.5" r="5.5" />
+      <path d="M8 10.5h5M10.5 8v5M15 15l5 5" />
     </svg>
   );
 }
