@@ -12,6 +12,10 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const PROFILE_EVENT: &str = "profiles://state";
 const MAX_PROFILE_NAME_LENGTH: usize = 80;
 const MAX_PROFILE_PROMPT_LENGTH: usize = 20_000;
+const DEFAULT_PROFILE_PROMPT: &str = "What should I say? Provide me answer in 5 sentences.\n\
+Tone must be natural, human, and conversational\n\
+- Avoid unnecessary adjectives or dramatic emphasis unless it adds clear value.\n\
+- Never be robotic or overly formal";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,10 +38,10 @@ impl Default for ProfilesSnapshot {
         Self {
             profiles: vec![Profile {
                 id: 1,
-                name: "Default profile".to_string(),
-                prompt: String::new(),
+                name: "Default".to_string(),
+                prompt: DEFAULT_PROFILE_PROMPT.to_string(),
             }],
-            active_profile_id: None,
+            active_profile_id: Some(1),
             next_id: 2,
         }
     }
@@ -307,7 +311,20 @@ fn save_profiles(app: &AppHandle, snapshot: &ProfilesSnapshot) -> Result<(), Str
 
 #[cfg(test)]
 mod tests {
-    use super::{next_profile_name, normalize_snapshot, validate_name, Profile, ProfilesSnapshot};
+    use super::{
+        next_profile_name, normalize_snapshot, validate_name, Profile, ProfilesSnapshot,
+        DEFAULT_PROFILE_PROMPT,
+    };
+
+    #[test]
+    fn default_profile_is_ready_and_active() {
+        let snapshot = ProfilesSnapshot::default();
+
+        assert_eq!(snapshot.profiles.len(), 1);
+        assert_eq!(snapshot.profiles[0].name, "Default");
+        assert_eq!(snapshot.profiles[0].prompt, DEFAULT_PROFILE_PROMPT);
+        assert_eq!(snapshot.active_profile_id, Some(snapshot.profiles[0].id));
+    }
 
     #[test]
     fn profile_names_are_required_and_trimmed() {
