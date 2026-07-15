@@ -52,6 +52,7 @@ let hotkeyState = {
 let automationPreferences = {
   keepExistingPrompt: false,
 };
+let isClosing = false;
 
 function invoke(command, payload) {
   return window.__TAURI_INTERNALS__.invoke(command, payload);
@@ -316,16 +317,25 @@ async function refreshHotkeys() {
 }
 
 async function closeSettings() {
-  await invoke('browser_set_settings_overlay', {
-    request: {
-      isOpen: false,
-      left: 0,
-      top: 0,
-      width: 1,
-      height: 1,
-      indicatorLeft: 14,
-    },
-  });
+  if (isClosing) {
+    return;
+  }
+
+  isClosing = true;
+  try {
+    await invoke('browser_set_settings_overlay', {
+      request: {
+        isOpen: false,
+        left: 0,
+        top: 0,
+        width: 1,
+        height: 1,
+        indicatorLeft: 14,
+      },
+    });
+  } finally {
+    isClosing = false;
+  }
 }
 
 async function applySettings(event) {
@@ -368,6 +378,9 @@ async function applySettings(event) {
 
 formElement.addEventListener('submit', (event) => {
   void applySettings(event);
+});
+window.addEventListener('blur', () => {
+  void closeSettings();
 });
 
 renderFields();

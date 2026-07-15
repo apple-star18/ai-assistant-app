@@ -153,6 +153,7 @@ export interface CommandMap {
     args: {
       request: {
         toolbarHeight: number;
+        statusBarHeight: number;
       };
     };
     response: BrowserState;
@@ -200,6 +201,10 @@ export interface CommandMap {
     response: CaptionState;
   };
   captions_stop: {
+    args: undefined;
+    response: CaptionState;
+  };
+  captions_clear: {
     args: undefined;
     response: CaptionState;
   };

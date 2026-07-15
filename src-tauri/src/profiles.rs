@@ -5,9 +5,11 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const PROFILES_FILE: &str = "profiles.json";
+const MAIN_WINDOW_LABEL: &str = "main";
+const PROFILE_EVENT: &str = "profiles://state";
 const MAX_PROFILE_NAME_LENGTH: usize = 80;
 const MAX_PROFILE_PROMPT_LENGTH: usize = 20_000;
 
@@ -98,6 +100,7 @@ pub fn profiles_add(
     });
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
+    emit_profile_state(&app, &snapshot);
     Ok(snapshot)
 }
 
@@ -119,6 +122,7 @@ pub fn profiles_save(
     profile.prompt = prompt;
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
+    emit_profile_state(&app, &snapshot);
     Ok(snapshot)
 }
 
@@ -139,6 +143,7 @@ pub fn profiles_delete(
     }
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
+    emit_profile_state(&app, &snapshot);
     Ok(snapshot)
 }
 
@@ -159,7 +164,12 @@ pub fn profiles_activate(
     snapshot.active_profile_id = Some(request.id);
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
+    emit_profile_state(&app, &snapshot);
     Ok(snapshot)
+}
+
+fn emit_profile_state(app: &AppHandle, snapshot: &ProfilesSnapshot) {
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, PROFILE_EVENT, snapshot.clone());
 }
 
 pub fn active_prompt(app: &AppHandle) -> Result<Option<String>, String> {

@@ -155,6 +155,21 @@ pub fn captions_stop(
     Ok(state.snapshot()?.clone())
 }
 
+#[tauri::command]
+pub fn captions_clear(
+    app: AppHandle,
+    state: State<'_, CaptionStore>,
+) -> CommandResult<CaptionSnapshot> {
+    let next_snapshot = {
+        let mut snapshot = state.snapshot()?;
+        clear_caption_collection(&mut snapshot);
+        snapshot.clone()
+    };
+
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, CAPTION_EVENT, next_snapshot.clone());
+    Ok(next_snapshot)
+}
+
 pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<CaptionStore>();
     let monitor = state
@@ -301,6 +316,23 @@ pub fn mark_caption_submitted(app: &AppHandle, caption_text: String) {
         snapshot.caption_buffer.clear();
         snapshot.last_error = None;
     });
+}
+
+fn clear_caption_collection(snapshot: &mut CaptionSnapshot) {
+    let current_source_text = clean_caption_text(&snapshot.latest_caption);
+
+    if !current_source_text.is_empty() {
+        // Treat everything currently visible in Live Captions as already seen. This prevents
+        // the next UI Automation poll from putting cleared text back into the new batch.
+        snapshot.last_submitted_source_text = current_source_text;
+    }
+
+    snapshot.current_caption_text.clear();
+    snapshot.last_submitted_caption_text.clear();
+    snapshot.pending_caption_text.clear();
+    snapshot.latest_caption.clear();
+    snapshot.caption_buffer.clear();
+    snapshot.last_error = None;
 }
 
 fn monitor_live_captions(app: AppHandle, stop_requested: Arc<AtomicBool>) {
@@ -844,8 +876,9 @@ mod tests {
     use std::sync::{atomic::AtomicBool, Arc};
 
     use super::{
-        clean_caption_text, clear_monitor_if_matches, pending_caption_text, push_caption,
-        take_caption_batch_from_snapshot, CaptionMonitor, CaptionSnapshot, CaptionStore,
+        clean_caption_text, clear_caption_collection, clear_monitor_if_matches,
+        pending_caption_text, push_caption, take_caption_batch_from_snapshot, CaptionMonitor,
+        CaptionSnapshot, CaptionStore,
     };
 
     #[test]
@@ -973,6 +1006,25 @@ mod tests {
         push_caption(&mut snapshot, "Before hotkey. After hotkey.".to_string());
 
         assert_eq!(snapshot.pending_caption_text, "After hotkey.");
+    }
+
+    #[test]
+    fn clearing_starts_a_new_batch_at_the_current_live_caption_boundary() {
+        let mut snapshot = CaptionSnapshot::default();
+        push_caption(&mut snapshot, "Before clear.".to_string());
+
+        clear_caption_collection(&mut snapshot);
+
+        assert!(snapshot.current_caption_text.is_empty());
+        assert!(snapshot.pending_caption_text.is_empty());
+        assert!(snapshot.latest_caption.is_empty());
+
+        push_caption(
+            &mut snapshot,
+            "Before clear. Collected after clear.".to_string(),
+        );
+
+        assert_eq!(snapshot.pending_caption_text, "Collected after clear.");
     }
 
     #[test]

@@ -9,19 +9,24 @@ import {
 } from 'react';
 
 import {
+  activateProfile,
+  clearCaptions,
   closeMainWindow,
   getAutomationState,
   focusBrowser,
   getBrowserState,
   getCaptionState,
   getHotkeyState,
+  getProfileState,
   goBrowserBack,
   listenToAutomationState,
   listenToBrowserState,
   listenToCaptionState,
   listenToHotkeyState,
+  listenToProfileState,
   listenToProfileOverlayClosed,
   listenToSettingsOverlayClosed,
+  listenToTransparencyOverlayClosed,
   minimizeMainWindow,
   navigateBrowser,
   openBrowserHome,
@@ -35,9 +40,13 @@ import {
   startMainWindowDragging,
   startMainWindowResizeDragging,
   stopCaptions,
-  submitCaptionsToChatGpt,
 } from './lib/tauri/client';
-import type { AutomationState, BrowserState, CaptionState } from './lib/tauri/contracts';
+import type {
+  AutomationState,
+  BrowserState,
+  CaptionState,
+  ProfileState,
+} from './lib/tauri/contracts';
 import type { HotkeyState } from './lib/tauri/contracts';
 import type { WindowResizeDirection } from './lib/tauri/client';
 
@@ -77,6 +86,12 @@ const initialHotkeyState: HotkeyState = {
   lastError: null,
 };
 
+const initialProfileState: ProfileState = {
+  profiles: [],
+  activeProfileId: null,
+  nextId: 1,
+};
+
 const TRANSPARENCY_CONTROL_WIDTH = 220;
 const TRANSPARENCY_CONTROL_MARGIN = 8;
 const TRANSPARENCY_OVERLAY_TOP = 46;
@@ -108,6 +123,7 @@ export function App() {
 
 function BrowserWindow() {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const statusBarRef = useRef<HTMLElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const profileButtonRef = useRef<HTMLButtonElement | null>(null);
   const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -116,6 +132,7 @@ function BrowserWindow() {
   const [captionState, setCaptionState] = useState<CaptionState>(initialCaptionState);
   const [automationState, setAutomationState] = useState<AutomationState>(initialAutomationState);
   const [hotkeyState, setHotkeyState] = useState<HotkeyState>(initialHotkeyState);
+  const [profileState, setProfileState] = useState<ProfileState>(initialProfileState);
   const [address, setAddress] = useState(initialBrowserState.currentUrl);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -133,7 +150,8 @@ function BrowserWindow() {
       getCaptionState(),
       getAutomationState(),
       getHotkeyState(),
-    ]).then(([browserResult, captionResult, automationResult, hotkeyResult]) => {
+      getProfileState(),
+    ]).then(([browserResult, captionResult, automationResult, hotkeyResult, profileResult]) => {
       if (!isMounted) {
         return;
       }
@@ -153,10 +171,17 @@ function BrowserWindow() {
       if (hotkeyResult.status === 'fulfilled') {
         setHotkeyState(hotkeyResult.value);
       }
+      if (profileResult.status === 'fulfilled') {
+        setProfileState(profileResult.value);
+      }
 
-      const failedRequest = [browserResult, captionResult, automationResult, hotkeyResult].find(
-        (result) => result.status === 'rejected',
-      );
+      const failedRequest = [
+        browserResult,
+        captionResult,
+        automationResult,
+        hotkeyResult,
+        profileResult,
+      ].find((result) => result.status === 'rejected');
       if (failedRequest?.status === 'rejected') {
         setCommandError(getErrorMessage(failedRequest.reason));
       }
@@ -184,7 +209,16 @@ function BrowserWindow() {
     const unlistenHotkeys = listenToHotkeyState((state) => {
       setHotkeyState(state);
     });
-    const listeners = [unlisten, unlistenCaptions, unlistenAutomation, unlistenHotkeys];
+    const unlistenProfiles = listenToProfileState((state) => {
+      setProfileState(state);
+    });
+    const listeners = [
+      unlisten,
+      unlistenCaptions,
+      unlistenAutomation,
+      unlistenHotkeys,
+      unlistenProfiles,
+    ];
 
     for (const listener of listeners) {
       void listener.catch((error: unknown) => {
@@ -224,6 +258,23 @@ function BrowserWindow() {
     let isMounted = true;
     const unlisten = listenToProfileOverlayClosed(() => {
       setIsProfileOpen(false);
+    });
+    void unlisten.catch((error: unknown) => {
+      if (isMounted) {
+        setCommandError(getErrorMessage(error));
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      void unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unlisten = listenToTransparencyOverlayClosed(() => {
+      setIsTransparencyOpen(false);
     });
     void unlisten.catch((error: unknown) => {
       if (isMounted) {
@@ -328,6 +379,7 @@ function BrowserWindow() {
     let animationFrame: number | null = null;
     let isDisposed = false;
     let lastToolbarHeight: number | null = null;
+    let lastStatusBarHeight: number | null = null;
 
     const syncBrowserBounds = () => {
       if (animationFrame !== null) {
@@ -337,21 +389,24 @@ function BrowserWindow() {
       animationFrame = window.requestAnimationFrame(() => {
         animationFrame = null;
 
-        if (isDisposed || !toolbarRef.current) {
+        if (isDisposed || !toolbarRef.current || !statusBarRef.current) {
           return;
         }
 
         const toolbarHeight = Math.ceil(toolbarRef.current.getBoundingClientRect().height);
+        const statusBarHeight = Math.ceil(statusBarRef.current.getBoundingClientRect().height);
 
-        if (toolbarHeight === lastToolbarHeight) {
+        if (toolbarHeight === lastToolbarHeight && statusBarHeight === lastStatusBarHeight) {
           return;
         }
 
         lastToolbarHeight = toolbarHeight;
+        lastStatusBarHeight = statusBarHeight;
 
-        void resizeBrowser(toolbarHeight).catch((error: unknown) => {
+        void resizeBrowser(toolbarHeight, statusBarHeight).catch((error: unknown) => {
           if (!isDisposed) {
             lastToolbarHeight = null;
+            lastStatusBarHeight = null;
             setCommandError(getErrorMessage(error));
           }
         });
@@ -362,6 +417,9 @@ function BrowserWindow() {
 
     if (toolbarRef.current) {
       observer.observe(toolbarRef.current);
+    }
+    if (statusBarRef.current) {
+      observer.observe(statusBarRef.current);
     }
 
     syncBrowserBounds();
@@ -416,18 +474,24 @@ function BrowserWindow() {
       browserState.lastError ??
       (automationState.isRunning
         ? 'Automation running'
-        : captionState.pendingCaptionText || captionState.latestCaption || statusText),
+        : captionState.pendingCaptionText || captionState.currentCaptionText || statusText),
     [
       automationState.isRunning,
       automationState.lastError,
       browserState.lastError,
       captionState.lastError,
-      captionState.latestCaption,
+      captionState.currentCaptionText,
       captionState.pendingCaptionText,
       commandError,
       hotkeyState.lastError,
       statusText,
     ],
+  );
+
+  const activeProfile = useMemo(
+    () =>
+      profileState.profiles.find((profile) => profile.id === profileState.activeProfileId) ?? null,
+    [profileState],
   );
 
   async function runBrowserCommand(command: () => Promise<BrowserState | undefined>) {
@@ -488,13 +552,23 @@ function BrowserWindow() {
     }
   }
 
-  async function submitCaptions() {
+  async function clearCollectedCaptions() {
     setCommandError(null);
 
     try {
-      const nextState = await submitCaptionsToChatGpt();
+      const nextState = await clearCaptions();
       setCaptionState(nextState);
-      await focusBrowser();
+    } catch (error) {
+      setCommandError(getErrorMessage(error));
+    }
+  }
+
+  async function selectActiveProfile(profileId: number) {
+    setCommandError(null);
+
+    try {
+      const nextState = await activateProfile(profileId);
+      setProfileState(nextState);
     } catch (error) {
       setCommandError(getErrorMessage(error));
     }
@@ -786,25 +860,15 @@ function BrowserWindow() {
           </button>
 
           <button
-            className="caption-submit-button"
+            className="caption-clear-button"
             type="button"
-            title="Send captions"
+            title="Clear collected captions and start a new batch"
+            aria-label="Clear collected captions"
             disabled={!captionState.pendingCaptionText && !captionState.currentCaptionText}
-            onClick={() => void submitCaptions()}
+            onClick={() => void clearCollectedCaptions()}
           >
-            <SendIcon />
+            <ClearCaptionsIcon />
           </button>
-
-          <div className="browser-status" role="status">
-            <span
-              className={
-                browserState.isLoading || automationState.isRunning
-                  ? 'status-dot loading'
-                  : 'status-dot'
-              }
-            />
-            <span>{statusMessage}</span>
-          </div>
 
           <div className="window-controls" aria-label="Window controls">
             <button
@@ -828,6 +892,46 @@ function BrowserWindow() {
           </div>
         </form>
       </div>
+      <footer ref={statusBarRef} className="browser-status-bar">
+        <div className="status-summary" role="status">
+          <span
+            className={
+              browserState.isLoading || automationState.isRunning
+                ? 'status-dot loading'
+                : 'status-dot'
+            }
+          />
+          <span>{statusMessage}</span>
+        </div>
+        <div className="active-profile-summary">
+          <span className="active-profile-label">Active profile</span>
+          <select
+            className="active-profile-select"
+            aria-label="Active profile"
+            value={activeProfile?.id ?? ''}
+            disabled={profileState.profiles.length === 0}
+            onChange={(event) => {
+              const profileId = Number(event.target.value);
+              if (Number.isSafeInteger(profileId)) {
+                void selectActiveProfile(profileId);
+              }
+            }}
+          >
+            {!activeProfile && <option value="">None</option>}
+            {profileState.profiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
+          <span
+            className="active-profile-prompt"
+            title={activeProfile?.prompt || 'No prompt configured'}
+          >
+            {activeProfile?.prompt || 'No prompt configured'}
+          </span>
+        </div>
+      </footer>
       {WINDOW_RESIZE_HANDLES.map(({ direction, position }) => (
         <div
           key={direction}
@@ -888,11 +992,12 @@ function CaptionsIcon() {
   );
 }
 
-function SendIcon() {
+function ClearCaptionsIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-      <path d="M4 12 20 4l-5 16-3.2-6.8L4 12Z" />
-      <path d="m11.8 13.2 3.6-3.6" />
+      <path d="m4.5 15.5 8.8-10a2 2 0 0 1 2.8-.2l2.6 2.3a2 2 0 0 1 .2 2.8l-7.1 8.1H7.2l-2.5-2.2a.6.6 0 0 1-.2-.8Z" />
+      <path d="m10 9.3 6 5.2" />
+      <path d="M11.8 18.5h7.7" />
     </svg>
   );
 }

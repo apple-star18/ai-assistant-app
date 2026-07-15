@@ -2,6 +2,7 @@ const input = document.querySelector('#opacity');
 const output = document.querySelector('#opacity-output');
 let pendingOpacity = null;
 let isApplyingOpacity = false;
+let isClosing = false;
 
 function setOpacityPercent(value) {
   const nextValue = Math.max(40, Math.min(100, Number(value) || 100));
@@ -43,7 +44,32 @@ async function flushOpacityUpdates() {
   }
 }
 
+async function closeTransparency() {
+  if (isClosing) {
+    return;
+  }
+
+  isClosing = true;
+  try {
+    await window.__TAURI_INTERNALS__.invoke('browser_set_transparency_overlay', {
+      request: {
+        isOpen: false,
+        left: 0,
+        top: 0,
+        width: 1,
+        height: 1,
+        opacityPercent: Number(input.value),
+      },
+    });
+  } finally {
+    isClosing = false;
+  }
+}
+
 window.setOpacityPercent = setOpacityPercent;
 input.addEventListener('input', () => {
   queueOpacityUpdate();
+});
+window.addEventListener('blur', () => {
+  void closeTransparency();
 });

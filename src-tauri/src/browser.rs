@@ -29,9 +29,12 @@ const PROFILE_OVERLAY_WEBVIEW_LABEL: &str = "profile-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
+const STATUS_BAR_HEIGHT: f64 = 36.0;
 const WINDOW_CONTENT_INSET: f64 = 12.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
 const MAX_TOOLBAR_HEIGHT: f64 = 420.0;
+const MIN_STATUS_BAR_HEIGHT: f64 = 24.0;
+const MAX_STATUS_BAR_HEIGHT: f64 = 160.0;
 const DEFAULT_WINDOW_OPACITY: f64 = 1.0;
 const MIN_WINDOW_OPACITY: f64 = 0.4;
 const MAX_WINDOW_OPACITY: f64 = 1.0;
@@ -80,6 +83,7 @@ pub struct BrowserStore {
 #[derive(Debug)]
 struct BrowserLayout {
     toolbar_height: f64,
+    status_bar_height: f64,
     settings_overlay_open: bool,
     profile_overlay_open: bool,
 }
@@ -88,6 +92,7 @@ impl Default for BrowserLayout {
     fn default() -> Self {
         Self {
             toolbar_height: TOOLBAR_HEIGHT,
+            status_bar_height: STATUS_BAR_HEIGHT,
             settings_overlay_open: false,
             profile_overlay_open: false,
         }
@@ -104,6 +109,7 @@ pub struct NavigateRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResizeRequest {
     toolbar_height: f64,
+    status_bar_height: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +184,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     )
     .data_directory(profile_dir)
     .accept_first_mouse(true)
+    .background_color(Color(33, 33, 33, 255))
     .on_navigation(is_allowed_navigation_url)
     .on_new_window(|_, _| NewWindowResponse::Deny)
     .on_document_title_changed({
@@ -211,10 +218,11 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     });
 
     let bounds = browser_bounds(&main_window.as_ref().window())?;
-    main_window
+    let browser = main_window
         .as_ref()
         .window()
         .add_child(browser, bounds.position, bounds.size)?;
+    browser.show()?;
 
     let transparency_overlay = WebviewBuilder::new(
         TRANSPARENCY_OVERLAY_WEBVIEW_LABEL,
@@ -377,9 +385,11 @@ pub fn browser_resize(
     request: ResizeRequest,
 ) -> CommandResult<BrowserSnapshot> {
     let toolbar_height = validate_toolbar_height(request.toolbar_height)?;
+    let status_bar_height = validate_status_bar_height(request.status_bar_height)?;
     {
         let mut layout = state.layout()?;
         layout.toolbar_height = toolbar_height;
+        layout.status_bar_height = status_bar_height;
     }
 
     resize_browser_to_window(&app);
@@ -454,6 +464,7 @@ pub fn browser_set_transparency_overlay(
 
     if !request.is_open {
         overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        let _ = app.emit("transparency-overlay://closed", ());
         return Ok(());
     }
 
@@ -479,6 +490,9 @@ pub fn browser_set_transparency_overlay(
         .eval(format!(
             "window.setOpacityPercent && window.setOpacityPercent({opacity_percent});"
         ))
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_focus()
         .map_err(BrowserCommandError::from_tauri)?;
 
     Ok(())
@@ -843,21 +857,23 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
         return;
     };
 
-    let toolbar_height = app
+    let (toolbar_height, status_bar_height) = app
         .state::<BrowserStore>()
         .layout
         .lock()
-        .map(|layout| layout.toolbar_height)
-        .unwrap_or(TOOLBAR_HEIGHT);
-    let bounds = match browser_fit_bounds(&main_window, toolbar_height, window_size) {
-        Ok(bounds) => bounds,
-        Err(error) => {
-            update_snapshot(app, |snapshot| {
-                snapshot.last_error = Some(format!("Failed to read browser window size: {error}"));
-            });
-            return;
-        }
-    };
+        .map(|layout| (layout.toolbar_height, layout.status_bar_height))
+        .unwrap_or((TOOLBAR_HEIGHT, STATUS_BAR_HEIGHT));
+    let bounds =
+        match browser_fit_bounds(&main_window, toolbar_height, status_bar_height, window_size) {
+            Ok(bounds) => bounds,
+            Err(error) => {
+                update_snapshot(app, |snapshot| {
+                    snapshot.last_error =
+                        Some(format!("Failed to read browser window size: {error}"));
+                });
+                return;
+            }
+        };
 
     if let Err(error) = browser.set_auto_resize(false) {
         update_snapshot(app, |snapshot| {
@@ -873,11 +889,23 @@ fn resize_browser_to_window_size(app: &AppHandle, window_size: BrowserWindowSize
         update_snapshot(app, |snapshot| {
             snapshot.last_error = Some(format!("Failed to set browser WebView bounds: {error}"));
         });
+        return;
+    }
+
+    if let Err(error) = browser.show() {
+        update_snapshot(app, |snapshot| {
+            snapshot.last_error = Some(format!("Failed to show browser WebView: {error}"));
+        });
     }
 }
 
 fn browser_bounds(window: &Window) -> tauri::Result<Rect> {
-    let bounds = browser_fit_bounds(window, TOOLBAR_HEIGHT, BrowserWindowSize::Current)?;
+    let bounds = browser_fit_bounds(
+        window,
+        TOOLBAR_HEIGHT,
+        STATUS_BAR_HEIGHT,
+        BrowserWindowSize::Current,
+    )?;
 
     Ok(Rect {
         position: bounds.position,
@@ -900,6 +928,7 @@ enum BrowserWindowSize {
 fn browser_fit_bounds(
     window: &Window,
     toolbar_height: f64,
+    status_bar_height: f64,
     window_size: BrowserWindowSize,
 ) -> tauri::Result<BrowserFitBounds> {
     let scale_factor = window.scale_factor()?;
@@ -911,9 +940,13 @@ fn browser_fit_bounds(
         BrowserWindowSize::Physical(physical_size) => physical_size.to_logical::<f64>(scale_factor),
     };
     let logical_toolbar_height = toolbar_height.round().max(1.0);
+    let logical_status_bar_height = status_bar_height.round().max(1.0);
     let logical_browser_width = (logical_size.width - WINDOW_CONTENT_INSET * 2.0).max(1.0);
-    let logical_browser_height =
-        (logical_size.height - logical_toolbar_height - WINDOW_CONTENT_INSET * 2.0).max(1.0);
+    let logical_browser_height = (logical_size.height
+        - logical_toolbar_height
+        - logical_status_bar_height
+        - WINDOW_CONTENT_INSET * 2.0)
+        .max(1.0);
 
     Ok(BrowserFitBounds {
         position: Position::Logical(LogicalPosition::new(
@@ -941,6 +974,22 @@ fn validate_toolbar_height(toolbar_height: f64) -> CommandResult<f64> {
     }
 
     Ok(toolbar_height)
+}
+
+fn validate_status_bar_height(status_bar_height: f64) -> CommandResult<f64> {
+    if !status_bar_height.is_finite() {
+        return Err(BrowserCommandError::validation(
+            "Status bar height must be a finite number.",
+        ));
+    }
+
+    if !(MIN_STATUS_BAR_HEIGHT..=MAX_STATUS_BAR_HEIGHT).contains(&status_bar_height) {
+        return Err(BrowserCommandError::validation(
+            "Status bar height is outside the allowed resize range.",
+        ));
+    }
+
+    Ok(status_bar_height)
 }
 
 fn validate_window_opacity(opacity: f64) -> CommandResult<f64> {

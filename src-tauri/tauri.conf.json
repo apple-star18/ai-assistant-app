@@ -18,6 +18,7 @@
         "height": 800,
         "minWidth": 700,
         "minHeight": 640,
+        "alwaysOnTop": true,
         "decorations": false,
         "shadow": false,
         "transparent": true
