@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import type {
   AutomationState,
+  BrowserProfileOverlayRequest,
   BrowserSettingsOverlayRequest,
   BrowserState,
   BrowserTransparencyOverlayRequest,
@@ -66,10 +67,6 @@ export function goBrowserForward() {
   return invokeCommand('browser_go_forward');
 }
 
-export function openBrowserProfile() {
-  return invokeCommand('browser_open_profile');
-}
-
 export function focusBrowser() {
   return invokeCommand('browser_focus');
 }
@@ -104,6 +101,12 @@ export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverla
 
 export function setBrowserSettingsOverlay(request: BrowserSettingsOverlayRequest) {
   return invokeCommand('browser_set_settings_overlay', {
+    request,
+  });
+}
+
+export function setBrowserProfileOverlay(request: BrowserProfileOverlayRequest) {
+  return invokeCommand('browser_set_profile_overlay', {
     request,
   });
 }
@@ -178,6 +181,12 @@ export function listenToHotkeyState(onState: (state: HotkeyState) => void) {
 
 export function listenToSettingsOverlayClosed(onClose: () => void) {
   return listen('settings-overlay://closed', () => {
+    onClose();
+  });
+}
+
+export function listenToProfileOverlayClosed(onClose: () => void) {
+  return listen('profile-overlay://closed', () => {
     onClose();
   });
 }

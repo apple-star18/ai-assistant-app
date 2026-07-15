@@ -40,6 +40,15 @@ export interface BrowserSettingsOverlayRequest {
   indicatorLeft: number;
 }
 
+export interface BrowserProfileOverlayRequest {
+  isOpen: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  indicatorLeft: number;
+}
+
 export interface CaptionState {
   isMonitoring: boolean;
   windowFound: boolean;
@@ -89,6 +98,21 @@ export interface HotkeyState {
   lastError: string | null;
 }
 
+export interface ProfileState {
+  profiles: Array<{
+    id: number;
+    name: string;
+    prompt: string;
+  }>;
+  activeProfileId: number | null;
+  nextId: number;
+}
+
+export interface DiagnosticLogState {
+  path: string;
+  contents: string;
+}
+
 export interface CommandMap {
   get_app_health: {
     args: undefined;
@@ -119,10 +143,6 @@ export interface CommandMap {
     response: BrowserState;
   };
   browser_go_forward: {
-    args: undefined;
-    response: BrowserState;
-  };
-  browser_open_profile: {
     args: undefined;
     response: BrowserState;
   };
@@ -161,6 +181,12 @@ export interface CommandMap {
   browser_set_settings_overlay: {
     args: {
       request: BrowserSettingsOverlayRequest;
+    };
+    response: undefined;
+  };
+  browser_set_profile_overlay: {
+    args: {
+      request: BrowserProfileOverlayRequest;
     };
     response: undefined;
   };
@@ -217,5 +243,47 @@ export interface CommandMap {
       };
     };
     response: HotkeyState;
+  };
+  profiles_get_state: {
+    args: undefined;
+    response: ProfileState;
+  };
+  profiles_add: {
+    args: undefined;
+    response: ProfileState;
+  };
+  profiles_save: {
+    args: {
+      request: {
+        id: number;
+        name: string;
+        prompt: string;
+      };
+    };
+    response: ProfileState;
+  };
+  profiles_delete: {
+    args: {
+      request: {
+        id: number;
+      };
+    };
+    response: ProfileState;
+  };
+  profiles_activate: {
+    args: {
+      request: {
+        id: number;
+      };
+    };
+    response: ProfileState;
+  };
+  diagnostics_get_log: {
+    args: undefined;
+    response: DiagnosticLogState;
+  };
+  diagnostics_clear_log: {
+    args: undefined;
+    response: DiagnosticLogState;
   };
 }

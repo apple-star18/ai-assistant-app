@@ -12,7 +12,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{browser, captions, screenshot};
+use crate::{browser, captions, diagnostics, profiles, screenshot};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const AUTOMATION_EVENT: &str = "automation://state";
@@ -505,6 +505,16 @@ fn prepare_caption_prompt(
     new_caption_text: &str,
     live_refresh_prompt: Option<&str>,
 ) -> Result<String, String> {
+    let prompt = prepare_caption_prompt_body(app, new_caption_text, live_refresh_prompt)?;
+    let profile_prompt = profiles::active_prompt(app)?.unwrap_or_default();
+    Ok(merge_profile_prompt(&profile_prompt, &prompt))
+}
+
+fn prepare_caption_prompt_body(
+    app: &AppHandle,
+    new_caption_text: &str,
+    live_refresh_prompt: Option<&str>,
+) -> Result<String, String> {
     let automation = app.state::<AutomationStore>();
     let refresh_prompt = automation
         .refresh_prompt
@@ -553,6 +563,22 @@ fn prepare_caption_prompt(
         .clone();
 
     Ok(merge_prompt_text(&existing, new_caption_text))
+}
+
+fn merge_profile_prompt(profile_prompt: &str, prompt: &str) -> String {
+    let profile_prompt = profile_prompt.trim();
+    let prompt = prompt.trim();
+    if profile_prompt.is_empty() {
+        return prompt.to_string();
+    }
+    if prompt == profile_prompt
+        || prompt
+            .strip_prefix(profile_prompt)
+            .is_some_and(|remainder| remainder.starts_with('\n'))
+    {
+        return prompt.to_string();
+    }
+    merge_prompt_text(profile_prompt, prompt)
 }
 
 fn merge_prompt_text(existing: &str, new_text: &str) -> String {
@@ -1098,6 +1124,7 @@ fn run_workflow(
     mode: AutomationMode,
     workflow: impl FnOnce() -> Result<UploadState, String>,
 ) -> CommandResult<AutomationSnapshot> {
+    diagnostics::record(app, "INFO", "automation", &format!("started mode={mode:?}"));
     update_snapshot(app, |snapshot| {
         snapshot.is_running = true;
         snapshot.last_mode = Some(mode);
@@ -1106,18 +1133,36 @@ fn run_workflow(
 
     match workflow() {
         Ok(upload_state) => {
+            diagnostics::record(
+                app,
+                "INFO",
+                "automation",
+                &format!("completed mode={mode:?} upload_state={upload_state:?}"),
+            );
             update_snapshot(app, |snapshot| {
                 snapshot.is_running = false;
                 snapshot.upload_state = upload_state;
             });
         }
         Err(message) if is_cancelled_error(&message) => {
+            diagnostics::record(
+                app,
+                "WARN",
+                "automation",
+                &format!("cancelled mode={mode:?}: {message}"),
+            );
             return Err(AutomationCommandError {
                 code: "automation_cancelled",
                 message,
             });
         }
         Err(message) => {
+            diagnostics::record(
+                app,
+                "ERROR",
+                "automation",
+                &format!("failed mode={mode:?}: {message}"),
+            );
             update_snapshot(app, |snapshot| {
                 snapshot.is_running = false;
                 snapshot.upload_state = UploadState::Failed;
@@ -1188,7 +1233,7 @@ mod tests {
     };
 
     use super::{
-        finish_mode_3_job, merge_prompt_text, submit_caption_when_ready,
+        finish_mode_3_job, merge_profile_prompt, merge_prompt_text, submit_caption_when_ready,
         try_reserve_caption_workflow_flag, CancellationToken, Mode3Coordinator, Mode3JobPermit,
     };
 
@@ -1319,6 +1364,18 @@ mod tests {
         assert_eq!(
             merge_prompt_text("Restored prompt\nNew live caption", "New live caption"),
             "Restored prompt\nNew live caption"
+        );
+    }
+
+    #[test]
+    fn active_profile_prompt_is_prefixed_without_duplication() {
+        assert_eq!(
+            merge_profile_prompt("Answer briefly", "Live caption"),
+            "Answer briefly\nLive caption"
+        );
+        assert_eq!(
+            merge_profile_prompt("Answer briefly", "Answer briefly\nLive caption"),
+            "Answer briefly\nLive caption"
         );
     }
 

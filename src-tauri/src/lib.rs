@@ -3,7 +3,9 @@ mod browser;
 mod captions;
 mod commands;
 mod config;
+mod diagnostics;
 mod hotkeys;
+mod profiles;
 mod screenshot;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -13,10 +15,13 @@ pub fn run() {
         .manage(captions::CaptionStore::default())
         .manage(automation::AutomationStore::default())
         .manage(hotkeys::HotkeyStore::default())
+        .manage(profiles::ProfileStore::default())
         .setup(|app| {
             browser::setup(app)?;
             automation::setup(app.handle());
             hotkeys::setup(app.handle());
+            profiles::setup(app.handle());
+            diagnostics::setup(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -27,12 +32,12 @@ pub fn run() {
             browser::browser_reload,
             browser::browser_go_back,
             browser::browser_go_forward,
-            browser::browser_open_profile,
             browser::browser_focus,
             browser::browser_clear_session,
             browser::browser_resize,
             browser::browser_set_content_protected,
             browser::browser_set_settings_overlay,
+            browser::browser_set_profile_overlay,
             browser::browser_set_transparency_overlay,
             browser::browser_set_window_opacity,
             captions::captions_get_state,
@@ -47,7 +52,14 @@ pub fn run() {
             automation::automation_shortcut_mode_3,
             automation::automation_submit_after_upload,
             hotkeys::hotkeys_get_state,
-            hotkeys::hotkeys_apply_settings
+            hotkeys::hotkeys_apply_settings,
+            profiles::profiles_get_state,
+            profiles::profiles_add,
+            profiles::profiles_save,
+            profiles::profiles_delete,
+            profiles::profiles_activate,
+            diagnostics::diagnostics_get_log,
+            diagnostics::diagnostics_clear_log
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Tauri application");

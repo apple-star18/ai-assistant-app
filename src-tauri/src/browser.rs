@@ -20,11 +20,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED,
 };
 
-use crate::{automation, captions};
+use crate::{automation, captions, diagnostics};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
 const SETTINGS_OVERLAY_WEBVIEW_LABEL: &str = "settings-overlay";
+const PROFILE_OVERLAY_WEBVIEW_LABEL: &str = "profile-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
@@ -80,6 +81,7 @@ pub struct BrowserStore {
 struct BrowserLayout {
     toolbar_height: f64,
     settings_overlay_open: bool,
+    profile_overlay_open: bool,
 }
 
 impl Default for BrowserLayout {
@@ -87,6 +89,7 @@ impl Default for BrowserLayout {
         Self {
             toolbar_height: TOOLBAR_HEIGHT,
             settings_overlay_open: false,
+            profile_overlay_open: false,
         }
     }
 }
@@ -129,6 +132,17 @@ pub struct SetTransparencyOverlayRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetSettingsOverlayRequest {
+    is_open: bool,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    indicator_left: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetProfileOverlayRequest {
     is_open: bool,
     left: f64,
     top: f64,
@@ -180,6 +194,16 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         move |_, payload| {
             let url = payload.url().to_string();
             let is_loading = matches!(payload.event(), PageLoadEvent::Started);
+            let origin = diagnostic_origin(&url);
+            diagnostics::record(
+                &app_handle,
+                "INFO",
+                "browser.navigation",
+                &format!(
+                    "{} {origin}",
+                    if is_loading { "started" } else { "finished" }
+                ),
+            );
             update_snapshot(&app_handle, |snapshot| {
                 snapshot.current_url = url;
                 snapshot.is_loading = is_loading;
@@ -187,6 +211,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
             });
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 automation::restore_refresh_prompt_after_page_load(&app_handle);
+                inspect_network_error_page(&app_handle, &origin);
             }
             resize_browser_to_window(&resize_app_handle);
         }
@@ -233,6 +258,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         LogicalSize::new(1.0, 1.0),
     )?;
     settings_overlay.hide()?;
+
+    let profile_overlay = WebviewBuilder::new(
+        PROFILE_OVERLAY_WEBVIEW_LABEL,
+        WebviewUrl::App("profile-overlay.html".into()),
+    )
+    .accept_first_mouse(true)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .focused(false);
+
+    let profile_overlay = main_window.as_ref().window().add_child(
+        profile_overlay,
+        LogicalPosition::new(0.0, 0.0),
+        LogicalSize::new(1.0, 1.0),
+    )?;
+    profile_overlay.hide()?;
 
     main_window.on_window_event(move |event| match event {
         WindowEvent::Resized(size) => {
@@ -318,53 +359,6 @@ pub fn browser_go_forward(
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
     run_fixed_browser_script(&app, "history.forward();")?;
-    Ok(state.snapshot()?.clone())
-}
-
-#[tauri::command]
-pub fn browser_open_profile(
-    app: AppHandle,
-    state: State<'_, BrowserStore>,
-) -> CommandResult<BrowserSnapshot> {
-    let result = eval_json(
-        &app,
-        r#"
-(() => {
-  const selectors = [
-    'button[data-testid="accounts-profile-button"]',
-    'button[data-testid="profile-button"]',
-    'button[aria-label="Open profile menu"]',
-    'button[aria-label="Profile"]'
-  ];
-  const profileButton = selectors
-    .map((selector) => document.querySelector(selector))
-    .find((element) => {
-      if (!(element instanceof HTMLElement)) return false;
-      const bounds = element.getBoundingClientRect();
-      return bounds.width > 0 && bounds.height > 0;
-    });
-
-  if (!profileButton) {
-    return { ok: false };
-  }
-
-  profileButton.click();
-  return { ok: true };
-})()
-"#,
-    )
-    .map_err(|message| BrowserCommandError {
-        code: "profile_unavailable",
-        message,
-    })?;
-
-    if result.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(BrowserCommandError {
-            code: "profile_unavailable",
-            message: "The ChatGPT profile button is not available on this page.".to_string(),
-        });
-    }
-
     Ok(state.snapshot()?.clone())
 }
 
@@ -574,6 +568,78 @@ pub fn browser_set_settings_overlay(
     Ok(())
 }
 
+#[tauri::command]
+pub fn browser_set_profile_overlay(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: SetProfileOverlayRequest,
+) -> CommandResult<()> {
+    let overlay = app
+        .get_webview(PROFILE_OVERLAY_WEBVIEW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "webview_unavailable",
+            message: "Profile overlay WebView is not available.".to_string(),
+        })?;
+
+    if !request.is_open {
+        overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        state.layout()?.profile_overlay_open = false;
+        let _ = app.emit("profile-overlay://closed", ());
+        return Ok(());
+    }
+
+    validate_overlay_rect(
+        request.left,
+        request.top,
+        request.width,
+        request.height,
+        "Profile overlay",
+    )?;
+    if !request.indicator_left.is_finite() {
+        return Err(BrowserCommandError::validation(
+            "Profile overlay indicator position must be a finite number.",
+        ));
+    }
+
+    let should_refresh = !state.layout()?.profile_overlay_open;
+    let indicator_left = request
+        .indicator_left
+        .round()
+        .clamp(14.0, (request.width - 14.0).max(14.0));
+    let position = Position::Logical(LogicalPosition::new(
+        request.left.round(),
+        request.top.round(),
+    ));
+    let size = Size::Logical(LogicalSize::new(
+        request.width.round().max(1.0),
+        request.height.round().max(1.0),
+    ));
+
+    overlay
+        .set_auto_resize(false)
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_bounds(Rect { position, size })
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay.show().map_err(BrowserCommandError::from_tauri)?;
+    let refresh_script = if should_refresh {
+        " window.refreshProfiles && window.refreshProfiles();"
+    } else {
+        ""
+    };
+    overlay
+        .eval(format!(
+            "window.setProfileIndicatorLeft && window.setProfileIndicatorLeft({indicator_left});{refresh_script}"
+        ))
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_focus()
+        .map_err(BrowserCommandError::from_tauri)?;
+    state.layout()?.profile_overlay_open = true;
+
+    Ok(())
+}
+
 fn apply_window_content_protection(
     window: &Window,
     is_content_protected: bool,
@@ -665,6 +731,68 @@ fn run_fixed_browser_script(app: &AppHandle, script: &'static str) -> CommandRes
     app.browser_webview()?
         .eval(script)
         .map_err(BrowserCommandError::from_tauri)
+}
+
+fn diagnostic_origin(raw_url: &str) -> String {
+    Url::parse(raw_url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| format!("{}://{host}", url.scheme()))
+        })
+        .unwrap_or_else(|| "unknown-origin".to_string())
+}
+
+fn inspect_network_error_page(app: &AppHandle, origin: &str) {
+    let Some(browser) = app.get_webview(BROWSER_WEBVIEW_LABEL) else {
+        return;
+    };
+    let callback_app = app.clone();
+    let callback_origin = origin.to_string();
+    let result = browser.eval_with_callback(
+        r#"
+(() => {
+  const bodyText = document.body?.innerText?.trim() || '';
+  if (!bodyText || bodyText.length > 4000) {
+    return { code: null };
+  }
+  const pageText = `${document.title || ''}\n${bodyText}`.toLowerCase();
+  const signals = [
+    ['upstream_connect_error', 'upstream connect error'],
+    ['connection_timeout', 'connection timeout'],
+    ['connection_timed_out', 'err_connection_timed_out'],
+    ['proxy_connection_failed', 'err_proxy_connection_failed'],
+    ['gateway_timeout', 'gateway timeout'],
+    ['bad_gateway', 'bad gateway'],
+    ['site_unreachable', "this site can't be reached"],
+    ['site_unreachable', 'this site can’t be reached']
+  ];
+  const signal = signals.find(([, text]) => pageText.includes(text));
+  return { code: signal?.[0] || null };
+})()
+"#,
+        move |result| {
+            let Ok(value) = serde_json::from_str::<Value>(&result) else {
+                return;
+            };
+            let Some(code) = value.get("code").and_then(Value::as_str) else {
+                return;
+            };
+            let message = format!("detected {code} at {callback_origin}");
+            diagnostics::record(&callback_app, "ERROR", "browser.network", &message);
+            update_snapshot(&callback_app, |snapshot| {
+                snapshot.last_error = Some(format!("Network error detected: {code}"));
+            });
+        },
+    );
+    if let Err(error) = result {
+        diagnostics::record(
+            app,
+            "WARN",
+            "browser.network",
+            &format!("failed to inspect page at {origin}: {error}"),
+        );
+    }
 }
 
 fn handle_download_event(app: &AppHandle, event: DownloadEvent<'_>) -> bool {

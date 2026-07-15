@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Profiles</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        color: #d8dee8;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        font-size: 12px;
+        padding-top: 7px;
+      }
+
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+
+      .panel {
+        --indicator-left: 50%;
+        --panel-border-color: #2f3743;
+        --panel-background-color: #0d1118;
+        position: relative;
+        display: grid;
+        width: 100%;
+        height: calc(100% - 7px);
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        gap: 9px;
+        border: 1px solid var(--panel-border-color);
+        border-radius: 8px;
+        background: var(--panel-background-color);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.46);
+        padding: 10px 11px;
+      }
+
+      .panel::before {
+        position: absolute;
+        top: -5px;
+        left: var(--indicator-left);
+        width: 9px;
+        height: 9px;
+        border-top: 1px solid var(--panel-border-color);
+        border-left: 1px solid var(--panel-border-color);
+        background: var(--panel-background-color);
+        content: '';
+        transform: translateX(-50%) rotate(45deg);
+      }
+
+      .header,
+      .header-actions,
+      .section-title,
+      .profile-row {
+        display: flex;
+        align-items: center;
+      }
+
+      .header {
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .header-actions {
+        gap: 6px;
+      }
+
+      h1,
+      h2 {
+        margin: 0;
+        color: #f4f6f8;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+
+      h1 {
+        font-size: 12px;
+      }
+
+      h2 {
+        font-size: 11px;
+      }
+
+      .workspace {
+        display: grid;
+        min-height: 0;
+        grid-template-columns: minmax(150px, 0.72fr) minmax(230px, 1.55fr);
+        gap: 10px;
+      }
+
+      .profile-pane,
+      .editor-pane {
+        display: grid;
+        min-width: 0;
+        min-height: 0;
+        border: 1px solid #252c36;
+        border-radius: 7px;
+        background: #0a0e14;
+        padding: 8px;
+      }
+
+      .profile-pane {
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        gap: 7px;
+      }
+
+      .editor-pane {
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 8px;
+      }
+
+      .section-title {
+        min-height: 24px;
+        justify-content: space-between;
+        color: #aab4c2;
+      }
+
+      .profile-list {
+        display: grid;
+        min-height: 0;
+        align-content: start;
+        gap: 5px;
+        overflow: auto;
+      }
+
+      .profile-row {
+        min-width: 0;
+        gap: 4px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        background: #11161e;
+        padding: 2px;
+      }
+
+      .profile-row.selected {
+        border-color: #3f8069;
+        background: #102019;
+      }
+
+      .profile-select {
+        display: flex;
+        min-width: 0;
+        height: 30px;
+        flex: 1;
+        align-items: center;
+        gap: 7px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: #d8dee8;
+        padding: 0 7px;
+        text-align: left;
+      }
+
+      .profile-select:hover {
+        background: #1a202a;
+      }
+
+      .profile-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .active-dot {
+        width: 7px;
+        height: 7px;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: #35c489;
+      }
+
+      .active-status {
+        display: inline-grid;
+        width: 18px;
+        height: 27px;
+        flex: 0 0 auto;
+        place-items: center;
+      }
+
+      .delete-button {
+        display: inline-grid;
+        width: 27px;
+        height: 27px;
+        flex: 0 0 auto;
+        place-items: center;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: #aab4c2;
+        padding: 0;
+      }
+
+      .delete-button:hover {
+        background: #35171d;
+        color: #f2a7b3;
+      }
+
+      .delete-button svg {
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2;
+      }
+
+      .add-button,
+      .action-button {
+        height: 30px;
+        border: 1px solid #2f3743;
+        border-radius: 6px;
+        background: #151922;
+        color: #e6ebf2;
+        font-weight: 650;
+        padding: 0 10px;
+      }
+
+      .action-button {
+        display: inline-grid;
+        width: 30px;
+        place-items: center;
+        padding: 0;
+      }
+
+      .action-button svg {
+        width: 15px;
+        height: 15px;
+        fill: none;
+        stroke: currentColor;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-width: 2;
+      }
+
+      .add-button:hover,
+      .action-button:hover {
+        background: #202632;
+      }
+
+      .action-button.primary {
+        border-color: #346d59;
+        background: #183126;
+        color: #dff8ef;
+      }
+
+      .action-button.primary:hover {
+        background: #204635;
+      }
+
+      .action-button:disabled,
+      .add-button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .field {
+        display: grid;
+        gap: 5px;
+      }
+
+      .prompt-field {
+        min-height: 0;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      label {
+        color: #cbd5e1;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid #2f3743;
+        border-radius: 6px;
+        background: #0f131a;
+        color: #f4f6f8;
+        font-size: 11px;
+        padding: 7px 9px;
+      }
+
+      input {
+        height: 30px;
+      }
+
+      textarea {
+        min-height: 0;
+        resize: none;
+        line-height: 1.45;
+      }
+
+      input:focus-visible,
+      textarea:focus-visible {
+        border-color: #449c7c;
+        outline: 2px solid rgba(68, 156, 124, 0.3);
+        outline-offset: 1px;
+      }
+
+      input:disabled,
+      textarea:disabled {
+        color: #727d8b;
+        background: #0c1016;
+      }
+
+      .message {
+        min-width: 0;
+        overflow: hidden;
+        color: #9aa4b2;
+        font-size: 10px;
+        line-height: 1.2;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .message.error {
+        color: #f2a7b3;
+      }
+
+      .empty-state {
+        color: #7f8997;
+        font-size: 10px;
+        line-height: 1.4;
+        padding: 10px 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <form class="panel" id="profile-form" aria-labelledby="profile-title">
+      <div class="header">
+        <h1 id="profile-title">Profiles</h1>
+        <div class="header-actions">
+          <button
+            class="action-button"
+            id="save-button"
+            type="submit"
+            title="Save profile"
+            aria-label="Save profile"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <path d="M5 4h12l2 2v14H5Z" />
+              <path d="M8 4v6h8V4" />
+              <path d="M8 20v-6h8v6" />
+            </svg>
+          </button>
+          <button
+            class="action-button primary"
+            id="activate-button"
+            type="button"
+            title="Activate profile"
+            aria-label="Activate profile"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <circle cx="12" cy="12" r="8.5" />
+              <path d="m8.5 12 2.2 2.2 4.8-5" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="workspace">
+        <section class="profile-pane" aria-labelledby="profile-list-title">
+          <div class="section-title">
+            <h2 id="profile-list-title">Profile list</h2>
+          </div>
+          <div class="profile-list" id="profile-list"></div>
+          <button class="add-button" id="add-button" type="button">+ Add profile</button>
+        </section>
+
+        <section class="editor-pane" aria-labelledby="editor-title">
+          <div class="section-title">
+            <h2 id="editor-title">Edit profile</h2>
+          </div>
+          <div class="field">
+            <label for="profile-name">Name</label>
+            <input id="profile-name" name="name" maxlength="80" autocomplete="off" />
+          </div>
+          <div class="field prompt-field">
+            <label for="profile-prompt">Prompt</label>
+            <textarea
+              id="profile-prompt"
+              name="prompt"
+              maxlength="20000"
+              placeholder="Enter the reusable prompt for this profile"
+            ></textarea>
+          </div>
+        </section>
+      </div>
+
+      <div class="message" id="message" role="status"></div>
+    </form>
+    <script src="/profile-overlay.js"></script>
+  </body>
+</html>

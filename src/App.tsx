@@ -20,13 +20,14 @@ import {
   listenToBrowserState,
   listenToCaptionState,
   listenToHotkeyState,
+  listenToProfileOverlayClosed,
   listenToSettingsOverlayClosed,
   minimizeMainWindow,
   navigateBrowser,
   openBrowserHome,
-  openBrowserProfile,
   reloadBrowser,
   resizeBrowser,
+  setBrowserProfileOverlay,
   setBrowserSettingsOverlay,
   setBrowserContentProtected,
   setBrowserTransparencyOverlay,
@@ -83,6 +84,9 @@ const TRANSPARENCY_OVERLAY_HEIGHT = 43;
 const SETTINGS_OVERLAY_WIDTH = 332;
 const SETTINGS_OVERLAY_HEIGHT = 500;
 const SETTINGS_OVERLAY_MARGIN = 8;
+const PROFILE_OVERLAY_WIDTH = 620;
+const PROFILE_OVERLAY_HEIGHT = 430;
+const PROFILE_OVERLAY_MARGIN = 8;
 const WINDOW_CONTENT_INSET = 12;
 const WINDOW_RESIZE_HANDLES: ReadonlyArray<{
   direction: WindowResizeDirection;
@@ -105,6 +109,7 @@ export function App() {
 function BrowserWindow() {
   const toolbarRef = useRef<HTMLDivElement | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const profileButtonRef = useRef<HTMLButtonElement | null>(null);
   const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
   const isAddressEditingRef = useRef(false);
   const [browserState, setBrowserState] = useState<BrowserState>(initialBrowserState);
@@ -114,6 +119,7 @@ function BrowserWindow() {
   const [address, setAddress] = useState(initialBrowserState.currentUrl);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isTransparencyOpen, setIsTransparencyOpen] = useState(false);
   const [transparencyControlLeft, setTransparencyControlLeft] = useState(
     TRANSPARENCY_CONTROL_MARGIN,
@@ -215,6 +221,23 @@ function BrowserWindow() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const unlisten = listenToProfileOverlayClosed(() => {
+      setIsProfileOpen(false);
+    });
+    void unlisten.catch((error: unknown) => {
+      if (isMounted) {
+        setCommandError(getErrorMessage(error));
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      void unlisten.then((dispose) => dispose()).catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!isTransparencyOpen) {
       return;
     }
@@ -270,6 +293,36 @@ function BrowserWindow() {
       window.visualViewport?.removeEventListener('resize', repositionSettings);
     };
   }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (!isProfileOpen) {
+      return;
+    }
+
+    let animationFrame: number | null = null;
+    const repositionProfile = () => {
+      if (animationFrame !== null) {
+        return;
+      }
+
+      animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = null;
+        void showProfileOverlay();
+      });
+    };
+
+    repositionProfile();
+    window.addEventListener('resize', repositionProfile);
+    window.visualViewport?.addEventListener('resize', repositionProfile);
+
+    return () => {
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      window.removeEventListener('resize', repositionProfile);
+      window.visualViewport?.removeEventListener('resize', repositionProfile);
+    };
+  }, [isProfileOpen]);
 
   useLayoutEffect(() => {
     let animationFrame: number | null = null;
@@ -471,6 +524,9 @@ function BrowserWindow() {
 
   function openSettings() {
     setCommandError(null);
+    if (isProfileOpen) {
+      closeProfile();
+    }
     setIsSettingsOpen(true);
   }
 
@@ -518,6 +574,64 @@ function BrowserWindow() {
         top: top + WINDOW_CONTENT_INSET,
         width,
         height,
+        indicatorLeft,
+      });
+    } catch (error) {
+      setCommandError(getErrorMessage(error));
+    }
+  }
+
+  function openProfile() {
+    setCommandError(null);
+    if (isSettingsOpen) {
+      closeSettings();
+    }
+    setIsProfileOpen(true);
+  }
+
+  function closeProfile() {
+    setIsProfileOpen(false);
+    void setBrowserProfileOverlay({
+      isOpen: false,
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 1,
+      indicatorLeft: 14,
+    }).catch((error: unknown) => {
+      setCommandError(getErrorMessage(error));
+    });
+  }
+
+  async function showProfileOverlay() {
+    if (!toolbarRef.current || !profileButtonRef.current) {
+      return;
+    }
+
+    const topLayerRect = toolbarRef.current.getBoundingClientRect();
+    const buttonRect = profileButtonRef.current.getBoundingClientRect();
+    const width = Math.max(
+      420,
+      Math.min(PROFILE_OVERLAY_WIDTH, topLayerRect.width - PROFILE_OVERLAY_MARGIN * 2),
+    );
+    const buttonCenter = buttonRect.left - topLayerRect.left + buttonRect.width / 2;
+    const maxLeft = Math.max(
+      PROFILE_OVERLAY_MARGIN,
+      topLayerRect.width - width - PROFILE_OVERLAY_MARGIN,
+    );
+    const left = Math.round(
+      Math.min(maxLeft, Math.max(PROFILE_OVERLAY_MARGIN, buttonCenter - width / 2)),
+    );
+    const top = Math.round(topLayerRect.height + PROFILE_OVERLAY_MARGIN);
+    const indicatorLeft = Math.round(buttonCenter - left);
+
+    try {
+      await setBrowserProfileOverlay({
+        isOpen: true,
+        left: left + WINDOW_CONTENT_INSET,
+        top: top + WINDOW_CONTENT_INSET,
+        width,
+        height: PROFILE_OVERLAY_HEIGHT,
         indicatorLeft,
       });
     } catch (error) {
@@ -601,11 +715,13 @@ function BrowserWindow() {
           </button>
 
           <button
-            className="profile-button"
+            ref={profileButtonRef}
+            className={isProfileOpen ? 'profile-button active' : 'profile-button'}
             type="button"
             title="Profile"
-            aria-label="Open ChatGPT profile menu"
-            onClick={() => void runBrowserCommand(openBrowserProfile)}
+            aria-label="Open profiles"
+            aria-expanded={isProfileOpen}
+            onClick={isProfileOpen ? closeProfile : openProfile}
           >
             <ProfileIcon />
           </button>
