@@ -153,6 +153,7 @@ export interface CommandMap {
     args: {
       request: {
         toolbarHeight: number;
+        statusBarHeight: number;
       };
     };
     response: BrowserState;

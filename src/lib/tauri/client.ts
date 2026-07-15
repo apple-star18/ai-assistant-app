@@ -12,6 +12,7 @@ import type {
   CommandMap,
   HotkeyBindingRequest,
   HotkeyState,
+  ProfileState,
 } from './contracts';
 
 type CommandName = keyof CommandMap;
@@ -75,9 +76,9 @@ export function clearBrowserSession() {
   return invokeCommand('browser_clear_session');
 }
 
-export function resizeBrowser(toolbarHeight: number) {
+export function resizeBrowser(toolbarHeight: number, statusBarHeight: number) {
   return invokeCommand('browser_resize', {
-    request: { toolbarHeight },
+    request: { toolbarHeight, statusBarHeight },
   });
 }
 
@@ -155,6 +156,14 @@ export function getHotkeyState() {
   return invokeCommand('hotkeys_get_state');
 }
 
+export function getProfileState() {
+  return invokeCommand('profiles_get_state');
+}
+
+export function activateProfile(id: number) {
+  return invokeCommand('profiles_activate', { request: { id } });
+}
+
 export function applyHotkeySettings(bindings: HotkeyBindingRequest[]) {
   return invokeCommand('hotkeys_apply_settings', { request: { bindings } });
 }
@@ -183,6 +192,12 @@ export function listenToHotkeyState(onState: (state: HotkeyState) => void) {
   });
 }
 
+export function listenToProfileState(onState: (state: ProfileState) => void) {
+  return listen<ProfileState>('profiles://state', (event) => {
+    onState(event.payload);
+  });
+}
+
 export function listenToSettingsOverlayClosed(onClose: () => void) {
   return listen('settings-overlay://closed', () => {
     onClose();
@@ -191,6 +206,12 @@ export function listenToSettingsOverlayClosed(onClose: () => void) {
 
 export function listenToProfileOverlayClosed(onClose: () => void) {
   return listen('profile-overlay://closed', () => {
+    onClose();
+  });
+}
+
+export function listenToTransparencyOverlayClosed(onClose: () => void) {
+  return listen('transparency-overlay://closed', () => {
     onClose();
   });
 }

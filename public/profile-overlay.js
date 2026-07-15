@@ -13,6 +13,7 @@ let profileState = {
   nextId: 1,
 };
 let selectedProfileId = null;
+let isClosing = false;
 
 function invoke(command, payload) {
   return window.__TAURI_INTERNALS__.invoke(command, payload);
@@ -62,7 +63,7 @@ function renderProfileList() {
     selectButton.type = 'button';
     selectButton.title = profile.name;
     selectButton.addEventListener('click', () => {
-      void selectAndActivateProfile(profile.id);
+      selectProfile(profile.id);
     });
 
     const profileName = document.createElement('span');
@@ -98,20 +99,11 @@ function renderProfileList() {
   profileListElement.replaceChildren(...rows);
 }
 
-async function selectAndActivateProfile(profileId) {
+function selectProfile(profileId) {
   selectedProfileId = profileId;
   render();
   nameInput.focus();
-  setBusy(true);
-  try {
-    profileState = await invoke('profiles_activate', { request: { id: profileId } });
-    render();
-    setMessage('Profile activated.');
-  } catch (error) {
-    setMessage(error?.message || 'Failed to activate profile.', true);
-  } finally {
-    setBusy(false);
-  }
+  setMessage('');
 }
 
 function render() {
@@ -201,18 +193,44 @@ async function saveProfile(event) {
 }
 
 async function activateProfile() {
+  if (selectedProfileId === null) {
+    setMessage('Select a profile first.', true);
+    return;
+  }
+
   setBusy(true);
   try {
-    await saveSelectedProfile();
     profileState = await invoke('profiles_activate', {
       request: { id: selectedProfileId },
     });
-    render();
+    renderProfileList();
     setMessage('Profile activated.');
   } catch (error) {
     setMessage(error?.message || 'Failed to activate profile.', true);
   } finally {
     setBusy(false);
+  }
+}
+
+async function closeProfile() {
+  if (isClosing) {
+    return;
+  }
+
+  isClosing = true;
+  try {
+    await invoke('browser_set_profile_overlay', {
+      request: {
+        isOpen: false,
+        left: 0,
+        top: 0,
+        width: 1,
+        height: 1,
+        indicatorLeft: 14,
+      },
+    });
+  } finally {
+    isClosing = false;
   }
 }
 
@@ -224,6 +242,9 @@ addButton.addEventListener('click', () => {
 });
 activateButton.addEventListener('click', () => {
   void activateProfile();
+});
+window.addEventListener('blur', () => {
+  void closeProfile();
 });
 
 window.setProfileIndicatorLeft = (indicatorLeft) => {
