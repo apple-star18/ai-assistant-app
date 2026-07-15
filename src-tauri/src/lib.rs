@@ -17,7 +17,6 @@ pub fn run() {
         .manage(profiles::ProfileStore::default())
         .setup(|app| {
             browser::setup(app)?;
-            automation::setup(app.handle());
             hotkeys::setup(app.handle());
             profiles::setup(app.handle());
             Ok(())
@@ -44,8 +43,6 @@ pub fn run() {
             captions::captions_clear,
             captions::captions_submit_to_chatgpt,
             automation::automation_get_state,
-            automation::automation_get_preferences,
-            automation::automation_apply_preferences,
             automation::automation_shortcut_mode_1,
             automation::automation_shortcut_mode_2,
             automation::automation_shortcut_mode_3,
