@@ -198,6 +198,12 @@ export function listenToProfileState(onState: (state: ProfileState) => void) {
   });
 }
 
+export function listenToBrowserFocused(onFocus: () => void) {
+  return listen('browser://focused', () => {
+    onFocus();
+  });
+}
+
 export function listenToSettingsOverlayClosed(onClose: () => void) {
   return listen('settings-overlay://closed', () => {
     onClose();

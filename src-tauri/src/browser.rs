@@ -13,6 +13,7 @@ use tauri::{
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
     Size, State, Url, WebviewUrl, Window, WindowEvent,
 };
+use webview2_com::FocusChangedEventHandler;
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowDisplayAffinity, GetWindowLongPtrW, SetLayeredWindowAttributes,
@@ -27,6 +28,7 @@ const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
 const SETTINGS_OVERLAY_WEBVIEW_LABEL: &str = "settings-overlay";
 const PROFILE_OVERLAY_WEBVIEW_LABEL: &str = "profile-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
+const BROWSER_FOCUSED_EVENT: &str = "browser://focused";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
 const STATUS_BAR_HEIGHT: f64 = 36.0;
@@ -222,6 +224,19 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .as_ref()
         .window()
         .add_child(browser, bounds.position, bounds.size)?;
+    let browser_focus_app_handle = app.handle().clone();
+    browser.with_webview(move |webview| {
+        let focus_handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
+            let _ = browser_focus_app_handle.emit(BROWSER_FOCUSED_EVENT, ());
+            Ok(())
+        }));
+        let mut token = 0;
+        let _ = unsafe {
+            webview
+                .controller()
+                .add_GotFocus(&focus_handler, &mut token)
+        };
+    })?;
     browser.show()?;
 
     let transparency_overlay = WebviewBuilder::new(

@@ -1,6 +1,7 @@
 import {
   FormEvent,
   MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -20,6 +21,7 @@ import {
   getProfileState,
   goBrowserBack,
   listenToAutomationState,
+  listenToBrowserFocused,
   listenToBrowserState,
   listenToCaptionState,
   listenToHotkeyState,
@@ -234,6 +236,25 @@ function BrowserWindow() {
       for (const listener of listeners) {
         void listener.then((dispose) => dispose()).catch(() => undefined);
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unlisten = listenToBrowserFocused(() => {
+      closeSettings();
+      closeProfile();
+      closeTransparencyControls();
+    });
+    void unlisten.catch((error: unknown) => {
+      if (isMounted) {
+        setCommandError(getErrorMessage(error));
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      void unlisten.then((dispose) => dispose()).catch(() => undefined);
     };
   }, []);
 
@@ -590,16 +611,55 @@ function BrowserWindow() {
     const nextIsOpen = !isTransparencyOpen;
 
     if (nextIsOpen) {
+      if (isSettingsOpen) {
+        closeSettings();
+      }
+      if (isProfileOpen) {
+        closeProfile();
+      }
       updateTransparencyControlPosition();
     }
 
     setIsTransparencyOpen(nextIsOpen);
   }
 
+  function closeTransparencyControls() {
+    setIsTransparencyOpen(false);
+  }
+
+  function handleShellPointerDown(event: ReactPointerEvent<HTMLElement>) {
+    const target = event.target;
+
+    if (!(target instanceof Node)) {
+      return;
+    }
+
+    if (
+      settingsButtonRef.current?.contains(target) ||
+      profileButtonRef.current?.contains(target) ||
+      transparencyButtonRef.current?.contains(target)
+    ) {
+      return;
+    }
+
+    if (isSettingsOpen) {
+      closeSettings();
+    }
+    if (isProfileOpen) {
+      closeProfile();
+    }
+    if (isTransparencyOpen) {
+      closeTransparencyControls();
+    }
+  }
+
   function openSettings() {
     setCommandError(null);
     if (isProfileOpen) {
       closeProfile();
+    }
+    if (isTransparencyOpen) {
+      closeTransparencyControls();
     }
     setIsSettingsOpen(true);
   }
@@ -659,6 +719,9 @@ function BrowserWindow() {
     setCommandError(null);
     if (isSettingsOpen) {
       closeSettings();
+    }
+    if (isTransparencyOpen) {
+      closeTransparencyControls();
     }
     setIsProfileOpen(true);
   }
@@ -739,6 +802,7 @@ function BrowserWindow() {
     <main
       className={browserState.isContentProtected ? 'browser-shell protected' : 'browser-shell'}
       aria-label="ChatGPT browser"
+      onPointerDownCapture={handleShellPointerDown}
     >
       <div ref={toolbarRef} className="browser-top-layer">
         <form

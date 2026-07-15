@@ -88,7 +88,8 @@ function renderFields() {
   keepPromptInput.name = 'keepExistingPrompt';
   keepPromptInput.checked = Boolean(automationPreferences.keepExistingPrompt);
   const keepPromptText = document.createElement('span');
-  keepPromptText.textContent = 'Keep the previous submitted Mode 1/2 prompt when adding new captions';
+  keepPromptText.textContent =
+    'Keep the previous submitted Mode 1/2 prompt when adding new captions';
   keepPromptLabel.append(keepPromptInput, keepPromptText);
 
   fieldsElement.replaceChildren(
@@ -378,9 +379,6 @@ async function applySettings(event) {
 
 formElement.addEventListener('submit', (event) => {
   void applySettings(event);
-});
-window.addEventListener('blur', () => {
-  void closeSettings();
 });
 
 renderFields();
