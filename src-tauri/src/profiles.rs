@@ -7,13 +7,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
-use crate::diagnostics;
-
 const PROFILES_FILE: &str = "profiles.json";
 const MAX_PROFILE_NAME_LENGTH: usize = 80;
 const MAX_PROFILE_PROMPT_LENGTH: usize = 20_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
     id: u64,
@@ -21,7 +19,7 @@ pub struct Profile {
     prompt: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfilesSnapshot {
     profiles: Vec<Profile>,
@@ -100,7 +98,6 @@ pub fn profiles_add(
     });
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
-    diagnostics::record(&app, "INFO", "profiles", &format!("added profile id={id}"));
     Ok(snapshot)
 }
 
@@ -122,12 +119,6 @@ pub fn profiles_save(
     profile.prompt = prompt;
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
-    diagnostics::record(
-        &app,
-        "INFO",
-        "profiles",
-        &format!("saved profile id={}", request.id),
-    );
     Ok(snapshot)
 }
 
@@ -148,12 +139,6 @@ pub fn profiles_delete(
     }
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
-    diagnostics::record(
-        &app,
-        "INFO",
-        "profiles",
-        &format!("deleted profile id={}", request.id),
-    );
     Ok(snapshot)
 }
 
@@ -174,13 +159,6 @@ pub fn profiles_activate(
     snapshot.active_profile_id = Some(request.id);
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
-
-    diagnostics::record(
-        &app,
-        "INFO",
-        "profiles",
-        &format!("activated profile id={}", request.id),
-    );
     Ok(snapshot)
 }
 
@@ -357,5 +335,29 @@ mod tests {
         });
         assert_eq!(snapshot.active_profile_id, None);
         assert_eq!(snapshot.next_id, 8);
+    }
+
+    #[test]
+    fn every_profile_and_active_selection_survive_serialization() {
+        let snapshot = ProfilesSnapshot {
+            profiles: vec![
+                Profile {
+                    id: 1,
+                    name: "Interview".to_string(),
+                    prompt: "Be concise".to_string(),
+                },
+                Profile {
+                    id: 2,
+                    name: "Coding".to_string(),
+                    prompt: "Return code first".to_string(),
+                },
+            ],
+            active_profile_id: Some(2),
+            next_id: 3,
+        };
+        let saved = serde_json::to_string(&snapshot).unwrap();
+        let restored: ProfilesSnapshot = serde_json::from_str(&saved).unwrap();
+
+        assert_eq!(restored, snapshot);
     }
 }

@@ -3,7 +3,6 @@ mod browser;
 mod captions;
 mod commands;
 mod config;
-mod diagnostics;
 mod hotkeys;
 mod profiles;
 mod screenshot;
@@ -21,7 +20,6 @@ pub fn run() {
             automation::setup(app.handle());
             hotkeys::setup(app.handle());
             profiles::setup(app.handle());
-            diagnostics::setup(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -57,9 +55,7 @@ pub fn run() {
             profiles::profiles_add,
             profiles::profiles_save,
             profiles::profiles_delete,
-            profiles::profiles_activate,
-            diagnostics::diagnostics_get_log,
-            diagnostics::diagnostics_clear_log
+            profiles::profiles_activate
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Tauri application");

@@ -108,11 +108,6 @@ export interface ProfileState {
   nextId: number;
 }
 
-export interface DiagnosticLogState {
-  path: string;
-  contents: string;
-}
-
 export interface CommandMap {
   get_app_health: {
     args: undefined;
@@ -277,13 +272,5 @@ export interface CommandMap {
       };
     };
     response: ProfileState;
-  };
-  diagnostics_get_log: {
-    args: undefined;
-    response: DiagnosticLogState;
-  };
-  diagnostics_clear_log: {
-    args: undefined;
-    response: DiagnosticLogState;
   };
 }

@@ -20,7 +20,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED,
 };
 
-use crate::{automation, captions, diagnostics};
+use crate::{automation, captions};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
@@ -194,16 +194,6 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         move |_, payload| {
             let url = payload.url().to_string();
             let is_loading = matches!(payload.event(), PageLoadEvent::Started);
-            let origin = diagnostic_origin(&url);
-            diagnostics::record(
-                &app_handle,
-                "INFO",
-                "browser.navigation",
-                &format!(
-                    "{} {origin}",
-                    if is_loading { "started" } else { "finished" }
-                ),
-            );
             update_snapshot(&app_handle, |snapshot| {
                 snapshot.current_url = url;
                 snapshot.is_loading = is_loading;
@@ -211,7 +201,6 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
             });
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 automation::restore_refresh_prompt_after_page_load(&app_handle);
-                inspect_network_error_page(&app_handle, &origin);
             }
             resize_browser_to_window(&resize_app_handle);
         }
@@ -731,68 +720,6 @@ fn run_fixed_browser_script(app: &AppHandle, script: &'static str) -> CommandRes
     app.browser_webview()?
         .eval(script)
         .map_err(BrowserCommandError::from_tauri)
-}
-
-fn diagnostic_origin(raw_url: &str) -> String {
-    Url::parse(raw_url)
-        .ok()
-        .and_then(|url| {
-            url.host_str()
-                .map(|host| format!("{}://{host}", url.scheme()))
-        })
-        .unwrap_or_else(|| "unknown-origin".to_string())
-}
-
-fn inspect_network_error_page(app: &AppHandle, origin: &str) {
-    let Some(browser) = app.get_webview(BROWSER_WEBVIEW_LABEL) else {
-        return;
-    };
-    let callback_app = app.clone();
-    let callback_origin = origin.to_string();
-    let result = browser.eval_with_callback(
-        r#"
-(() => {
-  const bodyText = document.body?.innerText?.trim() || '';
-  if (!bodyText || bodyText.length > 4000) {
-    return { code: null };
-  }
-  const pageText = `${document.title || ''}\n${bodyText}`.toLowerCase();
-  const signals = [
-    ['upstream_connect_error', 'upstream connect error'],
-    ['connection_timeout', 'connection timeout'],
-    ['connection_timed_out', 'err_connection_timed_out'],
-    ['proxy_connection_failed', 'err_proxy_connection_failed'],
-    ['gateway_timeout', 'gateway timeout'],
-    ['bad_gateway', 'bad gateway'],
-    ['site_unreachable', "this site can't be reached"],
-    ['site_unreachable', 'this site can’t be reached']
-  ];
-  const signal = signals.find(([, text]) => pageText.includes(text));
-  return { code: signal?.[0] || null };
-})()
-"#,
-        move |result| {
-            let Ok(value) = serde_json::from_str::<Value>(&result) else {
-                return;
-            };
-            let Some(code) = value.get("code").and_then(Value::as_str) else {
-                return;
-            };
-            let message = format!("detected {code} at {callback_origin}");
-            diagnostics::record(&callback_app, "ERROR", "browser.network", &message);
-            update_snapshot(&callback_app, |snapshot| {
-                snapshot.last_error = Some(format!("Network error detected: {code}"));
-            });
-        },
-    );
-    if let Err(error) = result {
-        diagnostics::record(
-            app,
-            "WARN",
-            "browser.network",
-            &format!("failed to inspect page at {origin}: {error}"),
-        );
-    }
 }
 
 fn handle_download_event(app: &AppHandle, event: DownloadEvent<'_>) -> bool {

@@ -62,9 +62,7 @@ function renderProfileList() {
     selectButton.type = 'button';
     selectButton.title = profile.name;
     selectButton.addEventListener('click', () => {
-      selectedProfileId = profile.id;
-      render();
-      nameInput.focus();
+      void selectAndActivateProfile(profile.id);
     });
 
     const profileName = document.createElement('span');
@@ -98,6 +96,22 @@ function renderProfileList() {
     return row;
   });
   profileListElement.replaceChildren(...rows);
+}
+
+async function selectAndActivateProfile(profileId) {
+  selectedProfileId = profileId;
+  render();
+  nameInput.focus();
+  setBusy(true);
+  try {
+    profileState = await invoke('profiles_activate', { request: { id: profileId } });
+    render();
+    setMessage('Profile activated.');
+  } catch (error) {
+    setMessage(error?.message || 'Failed to activate profile.', true);
+  } finally {
+    setBusy(false);
+  }
 }
 
 function render() {
