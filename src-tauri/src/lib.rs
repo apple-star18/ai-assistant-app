@@ -37,6 +37,7 @@ pub fn run() {
             browser::browser_set_profile_overlay,
             browser::browser_set_transparency_overlay,
             browser::browser_set_window_opacity,
+            browser::browser_set_scale,
             captions::captions_get_state,
             captions::captions_start,
             captions::captions_stop,

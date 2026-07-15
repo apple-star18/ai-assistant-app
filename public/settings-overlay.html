@@ -74,6 +74,12 @@
         gap: 8px;
       }
 
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
       h1 {
         margin: 0;
         color: #f4f6f8;
@@ -190,23 +196,133 @@
         stroke-linejoin: round;
         stroke-width: 2.25;
       }
+
+      .icon-button.active {
+        background: #282038;
+        color: #d9c8ff;
+      }
+
+      .scale-control {
+        position: absolute;
+        z-index: 3;
+        top: 42px;
+        right: 43px;
+        display: grid;
+        width: 220px;
+        grid-template-columns: minmax(0, 1fr) 42px;
+        align-items: center;
+        gap: 3px 8px;
+        border: 1px solid #3a2f47;
+        border-radius: 6px;
+        background: #10131a;
+        color: #cbd5e1;
+        font-size: 0.68rem;
+        font-weight: 650;
+        line-height: 1;
+        padding: 6px 8px;
+        box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+      }
+
+      .scale-control[hidden] {
+        display: none;
+      }
+
+      .scale-control::before {
+        position: absolute;
+        top: -5px;
+        right: 10px;
+        width: 9px;
+        height: 9px;
+        border-top: 1px solid #3a2f47;
+        border-left: 1px solid #3a2f47;
+        background: #10131a;
+        content: '';
+        transform: rotate(45deg);
+      }
+
+      .scale-control span {
+        grid-column: 1;
+      }
+
+      .scale-control input[type='range'] {
+        width: 100%;
+        height: 14px;
+        grid-column: 1;
+        margin: 0;
+        appearance: none;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        padding: 0;
+        cursor: default;
+      }
+
+      .scale-control input[type='range']::-webkit-slider-runnable-track {
+        height: 4px;
+        border-radius: 999px;
+        background: #6f58a0;
+      }
+
+      .scale-control input[type='range']::-webkit-slider-thumb {
+        width: 14px;
+        height: 14px;
+        margin-top: -5px;
+        appearance: none;
+        border: 2px solid #f7f2ff;
+        border-radius: 50%;
+        background: #9b7bd3;
+      }
+
+      .scale-control input[type='range']:focus-visible {
+        outline: 2px solid #1677c7;
+        outline-offset: 2px;
+      }
+
+      .scale-control output {
+        grid-row: 1 / span 2;
+        grid-column: 2;
+        color: #f4f6f8;
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+      }
     </style>
   </head>
   <body>
     <form class="panel" id="settings-form" aria-labelledby="settings-title">
       <div class="header">
         <h1 id="settings-title">Settings</h1>
-        <button
-          class="icon-button primary"
-          type="submit"
-          title="Apply settings"
-          aria-label="Apply settings"
-        >
-          <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
-            <path d="M20 6 9 17l-5-5" />
-          </svg>
-        </button>
+        <div class="header-actions">
+          <button
+            class="icon-button"
+            id="scale-button"
+            type="button"
+            title="Browser scale"
+            aria-label="Browser scale"
+            aria-expanded="false"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <circle cx="10.5" cy="10.5" r="5.5" />
+              <path d="M8 10.5h5M10.5 8v5M15 15l5 5" />
+            </svg>
+          </button>
+          <button
+            class="icon-button primary"
+            type="submit"
+            title="Apply settings"
+            aria-label="Apply settings"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+          </button>
+        </div>
       </div>
+
+      <label class="scale-control" id="scale-control" aria-label="Browser scale" hidden>
+        <span>Browser scale</span>
+        <input id="browser-scale" type="range" min="50" max="200" step="5" value="100" />
+        <output id="browser-scale-output">100%</output>
+      </label>
 
       <div class="fields" id="fields"></div>
 

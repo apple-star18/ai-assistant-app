@@ -18,6 +18,7 @@ export interface BrowserState {
   isLoading: boolean;
   isContentProtected: boolean;
   windowOpacity: number;
+  browserScale: number;
   lastDownload: BrowserDownload | null;
   lastError: string | null;
 }
@@ -170,6 +171,14 @@ export interface CommandMap {
     args: {
       request: {
         opacity: number;
+      };
+    };
+    response: BrowserState;
+  };
+  browser_set_scale: {
+    args: {
+      request: {
+        scale: number;
       };
     };
     response: BrowserState;

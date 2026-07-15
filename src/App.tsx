@@ -58,6 +58,7 @@ const initialBrowserState: BrowserState = {
   isLoading: true,
   isContentProtected: false,
   windowOpacity: 1,
+  browserScale: 1,
   lastDownload: null,
   lastError: null,
 };

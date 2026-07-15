@@ -94,6 +94,12 @@ export function setBrowserWindowOpacity(opacity: number) {
   });
 }
 
+export function setBrowserScale(scale: number) {
+  return invokeCommand('browser_set_scale', {
+    request: { scale },
+  });
+}
+
 export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverlayRequest) {
   return invokeCommand('browser_set_transparency_overlay', {
     request,

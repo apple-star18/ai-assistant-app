@@ -1,6 +1,10 @@
 const fieldsElement = document.querySelector('#fields');
 const formElement = document.querySelector('#settings-form');
 const messageElement = document.querySelector('#message');
+const scaleButton = document.querySelector('#scale-button');
+const scaleControl = document.querySelector('#scale-control');
+const scaleInput = document.querySelector('#browser-scale');
+const scaleOutput = document.querySelector('#browser-scale-output');
 
 const shortcutFields = [
   {
@@ -50,6 +54,8 @@ let hotkeyState = {
   lastError: null,
 };
 let isClosing = false;
+let pendingBrowserScale = null;
+let isApplyingBrowserScale = false;
 
 function invoke(command, payload) {
   return window.__TAURI_INTERNALS__.invoke(command, payload);
@@ -289,9 +295,58 @@ function setMessage(text, isError = false) {
   messageElement.className = isError ? 'message error' : 'message';
 }
 
+function setBrowserScalePercent(value) {
+  const nextValue = Math.max(50, Math.min(200, Number(value) || 100));
+  scaleInput.value = String(nextValue);
+  scaleOutput.textContent = `${nextValue}%`;
+}
+
+function setScaleControlOpen(isOpen) {
+  scaleControl.hidden = !isOpen;
+  scaleButton.classList.toggle('active', isOpen);
+  scaleButton.setAttribute('aria-expanded', String(isOpen));
+}
+
+function queueBrowserScaleUpdate() {
+  const scalePercent = Number(scaleInput.value);
+  setBrowserScalePercent(scalePercent);
+  pendingBrowserScale = scalePercent;
+
+  if (!isApplyingBrowserScale) {
+    void flushBrowserScaleUpdates();
+  }
+}
+
+async function flushBrowserScaleUpdates() {
+  isApplyingBrowserScale = true;
+
+  try {
+    while (pendingBrowserScale !== null) {
+      const scalePercent = pendingBrowserScale;
+      pendingBrowserScale = null;
+      const browserState = await invoke('browser_set_scale', {
+        request: { scale: scalePercent / 100 },
+      });
+      setBrowserScalePercent(Math.round(browserState.browserScale * 100));
+      setMessage('Browser scale updated.');
+    }
+  } catch (error) {
+    setMessage(error?.message || 'Failed to update browser scale.', true);
+  } finally {
+    isApplyingBrowserScale = false;
+
+    if (pendingBrowserScale !== null) {
+      void flushBrowserScaleUpdates();
+    }
+  }
+}
+
 async function refreshHotkeys() {
   try {
+    const browserState = await invoke('browser_get_state');
     hotkeyState = await invoke('hotkeys_get_state');
+    setBrowserScalePercent(Math.round(browserState.browserScale * 100));
+    setScaleControlOpen(false);
     renderFields();
     setMessage(hotkeyState.lastError || '');
   } catch (error) {
@@ -356,6 +411,12 @@ async function applySettings(event) {
 
 formElement.addEventListener('submit', (event) => {
   void applySettings(event);
+});
+scaleButton.addEventListener('click', () => {
+  setScaleControlOpen(scaleControl.hidden);
+});
+scaleInput.addEventListener('input', () => {
+  queueBrowserScaleUpdate();
 });
 
 renderFields();
