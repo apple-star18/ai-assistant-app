@@ -275,7 +275,8 @@ input:focus-visible {
 .caption-submit-button,
 .settings-button,
 .protection-button,
-.transparency-button {
+.transparency-button,
+.profile-button {
   width: 30px;
   min-width: 30px;
   gap: 6px;
@@ -303,6 +304,18 @@ input:focus-visible {
   color: #6f7a88;
   background: #11151c;
   cursor: not-allowed;
+}
+
+.profile-button {
+  color: #dbeafe;
+}
+
+.profile-button:hover {
+  background: #1b2940;
+}
+
+.profile-button.active {
+  background: #1b2940;
 }
 
 .settings-button {
@@ -375,7 +388,6 @@ input:focus-visible {
 
 .browser-toolbar .window-minimize-button,
 .browser-toolbar .window-close-button {
-  background: transparent;
   font-size: 1rem;
 }
 

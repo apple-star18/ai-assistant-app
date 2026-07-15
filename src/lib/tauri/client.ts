@@ -4,6 +4,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import type {
   AutomationState,
+  BrowserProfileOverlayRequest,
   BrowserSettingsOverlayRequest,
   BrowserState,
   BrowserTransparencyOverlayRequest,
@@ -104,6 +105,12 @@ export function setBrowserSettingsOverlay(request: BrowserSettingsOverlayRequest
   });
 }
 
+export function setBrowserProfileOverlay(request: BrowserProfileOverlayRequest) {
+  return invokeCommand('browser_set_profile_overlay', {
+    request,
+  });
+}
+
 export function getCaptionState() {
   return invokeCommand('captions_get_state');
 }
@@ -174,6 +181,12 @@ export function listenToHotkeyState(onState: (state: HotkeyState) => void) {
 
 export function listenToSettingsOverlayClosed(onClose: () => void) {
   return listen('settings-overlay://closed', () => {
+    onClose();
+  });
+}
+
+export function listenToProfileOverlayClosed(onClose: () => void) {
+  return listen('profile-overlay://closed', () => {
     onClose();
   });
 }

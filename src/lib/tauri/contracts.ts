@@ -40,6 +40,15 @@ export interface BrowserSettingsOverlayRequest {
   indicatorLeft: number;
 }
 
+export interface BrowserProfileOverlayRequest {
+  isOpen: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  indicatorLeft: number;
+}
+
 export interface CaptionState {
   isMonitoring: boolean;
   windowFound: boolean;
@@ -87,6 +96,16 @@ export interface HotkeyState {
   isRunning: boolean;
   bindings: HotkeyBindingState[];
   lastError: string | null;
+}
+
+export interface ProfileState {
+  profiles: Array<{
+    id: number;
+    name: string;
+    prompt: string;
+  }>;
+  activeProfileId: number | null;
+  nextId: number;
 }
 
 export interface CommandMap {
@@ -160,6 +179,12 @@ export interface CommandMap {
     };
     response: undefined;
   };
+  browser_set_profile_overlay: {
+    args: {
+      request: BrowserProfileOverlayRequest;
+    };
+    response: undefined;
+  };
   browser_set_transparency_overlay: {
     args: {
       request: BrowserTransparencyOverlayRequest;
@@ -213,5 +238,39 @@ export interface CommandMap {
       };
     };
     response: HotkeyState;
+  };
+  profiles_get_state: {
+    args: undefined;
+    response: ProfileState;
+  };
+  profiles_add: {
+    args: undefined;
+    response: ProfileState;
+  };
+  profiles_save: {
+    args: {
+      request: {
+        id: number;
+        name: string;
+        prompt: string;
+      };
+    };
+    response: ProfileState;
+  };
+  profiles_delete: {
+    args: {
+      request: {
+        id: number;
+      };
+    };
+    response: ProfileState;
+  };
+  profiles_activate: {
+    args: {
+      request: {
+        id: number;
+      };
+    };
+    response: ProfileState;
   };
 }

@@ -25,6 +25,7 @@ use crate::{automation, captions};
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
 const SETTINGS_OVERLAY_WEBVIEW_LABEL: &str = "settings-overlay";
+const PROFILE_OVERLAY_WEBVIEW_LABEL: &str = "profile-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
 const TOOLBAR_HEIGHT: f64 = 48.0;
@@ -80,6 +81,7 @@ pub struct BrowserStore {
 struct BrowserLayout {
     toolbar_height: f64,
     settings_overlay_open: bool,
+    profile_overlay_open: bool,
 }
 
 impl Default for BrowserLayout {
@@ -87,6 +89,7 @@ impl Default for BrowserLayout {
         Self {
             toolbar_height: TOOLBAR_HEIGHT,
             settings_overlay_open: false,
+            profile_overlay_open: false,
         }
     }
 }
@@ -129,6 +132,17 @@ pub struct SetTransparencyOverlayRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetSettingsOverlayRequest {
+    is_open: bool,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    indicator_left: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetProfileOverlayRequest {
     is_open: bool,
     left: f64,
     top: f64,
@@ -233,6 +247,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         LogicalSize::new(1.0, 1.0),
     )?;
     settings_overlay.hide()?;
+
+    let profile_overlay = WebviewBuilder::new(
+        PROFILE_OVERLAY_WEBVIEW_LABEL,
+        WebviewUrl::App("profile-overlay.html".into()),
+    )
+    .accept_first_mouse(true)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .focused(false);
+
+    let profile_overlay = main_window.as_ref().window().add_child(
+        profile_overlay,
+        LogicalPosition::new(0.0, 0.0),
+        LogicalSize::new(1.0, 1.0),
+    )?;
+    profile_overlay.hide()?;
 
     main_window.on_window_event(move |event| match event {
         WindowEvent::Resized(size) => {
@@ -523,6 +553,78 @@ pub fn browser_set_settings_overlay(
         .set_focus()
         .map_err(BrowserCommandError::from_tauri)?;
     state.layout()?.settings_overlay_open = true;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn browser_set_profile_overlay(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: SetProfileOverlayRequest,
+) -> CommandResult<()> {
+    let overlay = app
+        .get_webview(PROFILE_OVERLAY_WEBVIEW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "webview_unavailable",
+            message: "Profile overlay WebView is not available.".to_string(),
+        })?;
+
+    if !request.is_open {
+        overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        state.layout()?.profile_overlay_open = false;
+        let _ = app.emit("profile-overlay://closed", ());
+        return Ok(());
+    }
+
+    validate_overlay_rect(
+        request.left,
+        request.top,
+        request.width,
+        request.height,
+        "Profile overlay",
+    )?;
+    if !request.indicator_left.is_finite() {
+        return Err(BrowserCommandError::validation(
+            "Profile overlay indicator position must be a finite number.",
+        ));
+    }
+
+    let should_refresh = !state.layout()?.profile_overlay_open;
+    let indicator_left = request
+        .indicator_left
+        .round()
+        .clamp(14.0, (request.width - 14.0).max(14.0));
+    let position = Position::Logical(LogicalPosition::new(
+        request.left.round(),
+        request.top.round(),
+    ));
+    let size = Size::Logical(LogicalSize::new(
+        request.width.round().max(1.0),
+        request.height.round().max(1.0),
+    ));
+
+    overlay
+        .set_auto_resize(false)
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_bounds(Rect { position, size })
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay.show().map_err(BrowserCommandError::from_tauri)?;
+    let refresh_script = if should_refresh {
+        " window.refreshProfiles && window.refreshProfiles();"
+    } else {
+        ""
+    };
+    overlay
+        .eval(format!(
+            "window.setProfileIndicatorLeft && window.setProfileIndicatorLeft({indicator_left});{refresh_script}"
+        ))
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_focus()
+        .map_err(BrowserCommandError::from_tauri)?;
+    state.layout()?.profile_overlay_open = true;
 
     Ok(())
 }
