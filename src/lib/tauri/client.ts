@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import type {
   AutomationState,
   BrowserProfileOverlayRequest,
+  BrowserScaleOverlayRequest,
   BrowserSettingsOverlayRequest,
   BrowserState,
   BrowserTransparencyOverlayRequest,
@@ -102,6 +103,12 @@ export function setBrowserScale(scale: number) {
 
 export function setBrowserTransparencyOverlay(request: BrowserTransparencyOverlayRequest) {
   return invokeCommand('browser_set_transparency_overlay', {
+    request,
+  });
+}
+
+export function setBrowserScaleOverlay(request: BrowserScaleOverlayRequest) {
+  return invokeCommand('browser_set_scale_overlay', {
     request,
   });
 }
@@ -224,6 +231,12 @@ export function listenToProfileOverlayClosed(onClose: () => void) {
 
 export function listenToTransparencyOverlayClosed(onClose: () => void) {
   return listen('transparency-overlay://closed', () => {
+    onClose();
+  });
+}
+
+export function listenToScaleOverlayClosed(onClose: () => void) {
+  return listen('scale-overlay://closed', () => {
     onClose();
   });
 }

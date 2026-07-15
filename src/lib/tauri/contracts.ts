@@ -32,6 +32,15 @@ export interface BrowserTransparencyOverlayRequest {
   opacityPercent: number;
 }
 
+export interface BrowserScaleOverlayRequest {
+  isOpen: boolean;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  scalePercent: number;
+}
+
 export interface BrowserSettingsOverlayRequest {
   isOpen: boolean;
   left: number;
@@ -198,6 +207,12 @@ export interface CommandMap {
   browser_set_transparency_overlay: {
     args: {
       request: BrowserTransparencyOverlayRequest;
+    };
+    response: undefined;
+  };
+  browser_set_scale_overlay: {
+    args: {
+      request: BrowserScaleOverlayRequest;
     };
     response: undefined;
   };

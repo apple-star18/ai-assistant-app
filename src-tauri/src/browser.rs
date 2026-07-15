@@ -26,13 +26,14 @@ use crate::{automation, captions};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
+const SCALE_OVERLAY_WEBVIEW_LABEL: &str = "scale-overlay";
 const SETTINGS_OVERLAY_WEBVIEW_LABEL: &str = "settings-overlay";
 const PROFILE_OVERLAY_WEBVIEW_LABEL: &str = "profile-overlay";
 const MAIN_WINDOW_LABEL: &str = "main";
 const BROWSER_FOCUSED_EVENT: &str = "browser://focused";
 const BROWSER_SETTINGS_FILE: &str = "browser-settings.json";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
-const TOOLBAR_HEIGHT: f64 = 48.0;
+const TOOLBAR_HEIGHT: f64 = 82.0;
 const STATUS_BAR_HEIGHT: f64 = 36.0;
 const WINDOW_CONTENT_INSET: f64 = 12.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
@@ -154,6 +155,17 @@ pub struct SetTransparencyOverlayRequest {
     width: f64,
     height: f64,
     opacity_percent: u8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetScaleOverlayRequest {
+    is_open: bool,
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    scale_percent: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -282,6 +294,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         LogicalSize::new(1.0, 1.0),
     )?;
     transparency_overlay.hide()?;
+
+    let scale_overlay = WebviewBuilder::new(
+        SCALE_OVERLAY_WEBVIEW_LABEL,
+        WebviewUrl::App("scale-overlay.html".into()),
+    )
+    .accept_first_mouse(true)
+    .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .focused(false);
+
+    let scale_overlay = main_window.as_ref().window().add_child(
+        scale_overlay,
+        LogicalPosition::new(0.0, 0.0),
+        LogicalSize::new(1.0, 1.0),
+    )?;
+    scale_overlay.hide()?;
 
     let settings_overlay = WebviewBuilder::new(
         SETTINGS_OVERLAY_WEBVIEW_LABEL,
@@ -560,6 +588,60 @@ pub fn browser_set_transparency_overlay(
     overlay
         .eval(format!(
             "window.setOpacityPercent && window.setOpacityPercent({opacity_percent});"
+        ))
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_focus()
+        .map_err(BrowserCommandError::from_tauri)?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn browser_set_scale_overlay(
+    app: AppHandle,
+    request: SetScaleOverlayRequest,
+) -> CommandResult<()> {
+    let overlay = app
+        .get_webview(SCALE_OVERLAY_WEBVIEW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "webview_unavailable",
+            message: "Scale overlay WebView is not available.".to_string(),
+        })?;
+
+    if !request.is_open {
+        overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        let _ = app.emit("scale-overlay://closed", ());
+        return Ok(());
+    }
+
+    validate_overlay_rect(
+        request.left,
+        request.top,
+        request.width,
+        request.height,
+        "Scale overlay",
+    )?;
+    let scale_percent = request.scale_percent.clamp(50, 200);
+    let position = Position::Logical(LogicalPosition::new(
+        request.left.round(),
+        request.top.round(),
+    ));
+    let size = Size::Logical(LogicalSize::new(
+        request.width.round().max(1.0),
+        request.height.round().max(1.0),
+    ));
+
+    overlay
+        .set_auto_resize(false)
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .set_bounds(Rect { position, size })
+        .map_err(BrowserCommandError::from_tauri)?;
+    overlay.show().map_err(BrowserCommandError::from_tauri)?;
+    overlay
+        .eval(format!(
+            "window.setBrowserScalePercent && window.setBrowserScalePercent({scale_percent});"
         ))
         .map_err(BrowserCommandError::from_tauri)?;
     overlay
