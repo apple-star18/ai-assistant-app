@@ -1,178 +1,223 @@
 # AI Assistant Browser
 
-A Windows 11 desktop mini-browser for ChatGPT, built with Tauri 2, Rust, React, and TypeScript.
+A compact Windows 11 desktop browser for ChatGPT, built with Tauri 2, Rust, React, and TypeScript.
 
-The application is designed around a narrow native boundary: the ChatGPT web experience runs in a WebView, while Windows-specific capabilities such as Live Captions access, screenshots, and global shortcuts stay in Rust.
+The app combines ChatGPT with Windows Live Captions, screen capture, reusable prompt profiles, and global keyboard shortcuts. ChatGPT runs in an embedded child WebView, while privileged Windows features remain behind typed Rust commands.
 
-## Current Capabilities
+## Features
 
-- ChatGPT WebView browser shell
-- Persistent ChatGPT session storage
-- Back, forward, refresh, home, URL navigation, and session clear controls
-- Download event tracking
-- Windows Live Captions launch and UI Automation polling
-- Caption buffer management and caption cleanup
-- Caption submission into ChatGPT
-- Automation modes for caption submit, screenshot plus caption submit, and screenshot upload
-- Home resets automation and caption collection; Refresh preserves and restores prepared prompt text
-- Optional setting to combine an existing ChatGPT prompt with the next Mode 1 or Mode 2 caption batch
-- Primary-display screenshot capture using Win32 GDI
-- Configurable global automation shortcuts: `Ctrl+Enter`, `Ctrl+Shift+Enter`, and `Ctrl+Shift+S`
-- Configurable global window shortcuts: `Ctrl+Arrow` moves the window by 50 pixels and `Ctrl+\\` hides or shows it
-- Typed frontend IPC wrappers for Tauri commands
+### Compact ChatGPT browser
+
+- Keeps the ChatGPT login session across app restarts.
+- Provides Back, Refresh, Home, and direct URL navigation controls.
+- Tracks page loading and download results in the bottom status bar.
+- Uses a frameless window with custom minimize, close, and resize controls.
+- Stays above other applications while visible.
+- Supports hiding and showing the complete app with a global shortcut.
+
+### Live Captions collection
+
+- Opens Windows Live Captions from the toolbar.
+- Reads caption text through Windows UI Automation.
+- Cleans common caption artifacts and merges rolling updates without repeatedly adding the same text.
+- Collects captions until Mode 1 or Mode 2 consumes the current batch.
+- The toolbar Clear button discards the current batch and creates a new collection boundary immediately.
+- Text still visible in Windows Live Captions at the moment Clear is pressed is treated as already seen, so it is not added back on the next poll.
+
+### Automation modes
+
+| Mode                      | Default shortcut   | Behavior                                                                                                                                                                                             |
+| ------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mode 1: Caption Submit    | `Ctrl+Enter`       | Takes the current caption batch, builds a prompt, inserts it into ChatGPT, and submits it.                                                                                                           |
+| Mode 2: Capture + Caption | `Ctrl+Shift+Enter` | Captures the primary display, combines it with the current caption batch, uploads the image, and submits the prompt. Mode 2 can also run with an empty caption batch.                                |
+| Mode 3: Capture Only      | `Ctrl+Shift+S`     | Captures the primary display and adds it to the current unsent ChatGPT composer. It does not consume captions or submit automatically, so it can be used repeatedly to build visual project context. |
+
+Additional workflow behavior:
+
+- Refresh preserves an in-progress Mode 1/2 prompt and restores it after ChatGPT reloads.
+- Home clears caption and automation runtime state before returning to ChatGPT home.
+- A Settings preference can keep the previous submitted Mode 1/2 prompt when new captions are added.
+- Workflow guards prevent repeated shortcuts from corrupting an active caption or screenshot batch.
+- Temporary screenshot files are removed after the upload workflow finishes.
+
+### Mode 3 for live coding interviews
+
+Mode 3 is designed for interviews where ChatGPT needs to understand an existing project gradually. Instead of trying to fit the entire project into one screenshot, capture the relevant views as they appear during the interview.
+
+A typical workflow is:
+
+1. Open an important project file, architecture view, requirement, error, terminal result, or test output.
+2. Press `Ctrl+Shift+S` to add a screenshot of the primary display to the current ChatGPT composer.
+3. Navigate to another relevant part of the project and press the shortcut again.
+4. Repeat until the composer contains enough screenshots to explain the current project and problem.
+5. Type the interview question or instruction in ChatGPT, review the attached screenshots, and submit once manually.
+
+Each Mode 3 capture:
+
+- Adds another screenshot without removing previously attached, unsent screenshots.
+- Leaves the Live Captions batch available for a later Mode 1 or Mode 2 action.
+- Waits for active screenshot uploads to settle before reporting the batch as ready.
+- Coordinates rapid repeated shortcut presses so multiple captures can upload safely.
+- Leaves submission under the user's control, allowing the question and screenshot set to be reviewed first.
+
+Mode 3 captures the complete primary display. Before using it, move private messages, credentials, personal information, and unrelated windows away from the captured screen. ChatGPT attachment limits still apply, so capture distinct, useful views rather than many nearly identical screenshots.
+
+### Prompt profiles
+
+Profiles are reusable instructions appended to Mode 1 and Mode 2 prompts.
+
+- Create, rename, edit, save, activate, and delete profiles.
+- All profiles and the active-profile selection are persisted in the app data directory.
+- Saved profiles and the active selection are restored when the app restarts.
+- Clicking a profile row only selects it and loads its saved name and prompt into the editor.
+- The Save icon is the only action that persists editor changes.
+- The Active icon activates the currently selected profile without silently saving unsaved edits.
+- The active profile prompt is read when Mode 1 or Mode 2 starts and appended to the end of the generated prompt.
+
+The bottom status bar also provides:
+
+- The active profile name.
+- A single-line prompt preview, truncated with an ellipsis when necessary.
+- A profile dropdown that changes and persists the active profile immediately.
+
+### Settings and global shortcuts
+
+Settings supports configurable shortcuts with duplicate detection:
+
+| Action                    | Default shortcut   |
+| ------------------------- | ------------------ |
+| Mode 1: Caption Submit    | `Ctrl+Enter`       |
+| Mode 2: Capture + Caption | `Ctrl+Shift+Enter` |
+| Mode 3: Capture Only      | `Ctrl+Shift+S`     |
+| Move window               | `Ctrl+Arrow`       |
+| Hide / Show window        | `Ctrl+Backslash`   |
+
+Window movement uses 50-pixel steps and is clamped to the current monitor work area.
+
+### Privacy and appearance
+
+- Transparency control adjusts the complete app window from 40% to 100% opacity.
+- Content protection asks Windows to exclude the app from supported screen-capture workflows.
+- The browser WebView is kept separate from the toolbar and bottom status bar, so app controls never modify the ChatGPT page layout.
+- Transparency, Settings, and Profiles popovers close when focus moves elsewhere.
+- Dismissing Settings or Profiles by clicking elsewhere does not apply or save pending changes.
+
+## Toolbar
+
+From left to right, the toolbar contains:
+
+1. Back, Refresh, and Home.
+2. Settings and Profiles.
+3. Content protection and transparency.
+4. Address bar.
+5. Start/Stop Live Captions and Clear collected captions.
+6. Minimize and Close.
+
+The bottom bar contains operational status, the active-profile dropdown, and the truncated active prompt.
 
 ## Architecture
 
-```text
-.
-+-- src/                         # React + TypeScript frontend
-|   +-- App.tsx                  # Browser toolbar and automation controls
-|   +-- config/                  # Frontend environment parsing
-|   +-- lib/tauri/               # Typed IPC client and command contracts
-|   +-- styles/                  # Global application styles
-+-- src-tauri/                   # Rust backend and Tauri application shell
-|   +-- capabilities/            # Tauri permission boundaries
-|   +-- src/
-|   |   +-- automation.rs        # Cross-service automation workflows
-|   |   +-- browser.rs           # Child WebView, navigation, upload automation
-|   |   +-- captions.rs          # Live Captions UIA monitoring and text cleanup
-|   |   +-- commands/            # General Tauri commands
-|   |   +-- config.rs            # Backend environment config
-|   |   +-- hotkeys.rs           # Native global hotkey registration
-|   |   +-- lib.rs               # Tauri setup and command registration
-|   |   +-- screenshot.rs        # Win32 screen capture and PNG encoding
-|   +-- tauri.conf.json          # Window, bundle, and security configuration
-+-- package.json                 # Frontend scripts and dependencies
-+-- tsconfig.json                # TypeScript configuration
-+-- vite.config.ts               # Vite configuration
-```
+    .
+    +-- public/                      # Settings, Profiles, and transparency popovers
+    +-- src/
+    |   +-- App.tsx                 # Toolbar, bottom status bar, and shell state
+    |   +-- lib/tauri/              # Typed IPC client and command contracts
+    |   +-- styles/                 # Main application styles
+    +-- src-tauri/
+    |   +-- capabilities/           # Tauri permission boundaries
+    |   +-- src/
+    |   |   +-- automation.rs       # Mode 1/2/3 workflow orchestration
+    |   |   +-- browser.rs          # Child WebViews, navigation, and browser automation
+    |   |   +-- captions.rs         # Live Captions monitoring, cleanup, and batching
+    |   |   +-- hotkeys.rs          # Global shortcut registration and window movement
+    |   |   +-- profiles.rs         # Profile persistence and active-profile state
+    |   |   +-- screenshot.rs       # Primary-display capture and PNG encoding
+    |   |   +-- lib.rs              # Tauri setup and command registration
+    |   +-- tauri.conf.json         # Window, bundle, and security configuration
+    +-- package.json
 
-The intended long-term module shape is:
+The React app owns presentation state and typed calls into Rust. Rust owns:
 
-```text
-src/frontend/                    # UI layer
-src-tauri/src/browser/           # Browser application service
-src-tauri/src/caption/           # Caption application service
-src-tauri/src/windows/           # Native Windows adapters
-src-tauri/src/screenshot/        # Screenshot service
-src-tauri/src/automation/        # Workflow orchestration
-src-tauri/src/shortcuts/         # Shortcut registration and dispatch
-src-tauri/src/security/          # Validation and policy helpers
-```
+- WebView creation, focus, visibility, and bounds.
+- URL validation and trusted ChatGPT automation.
+- Windows UI Automation access.
+- Screen capture and temporary image handling.
+- Global shortcuts and window movement.
+- Caption, automation, and profile state.
+- Profile and preference persistence.
 
-The current implementation is still file-based inside `src-tauri/src/`; splitting those files into folders is a future refactor and should be done as small behavior-preserving commits.
+This boundary prevents the remote ChatGPT page from directly accessing native APIs, screenshots, shortcut registration, or saved profiles.
 
-## Runtime Design
+## Requirements
 
-The frontend owns only UI state, toolbar interactions, and typed calls into Rust. It does not call raw `invoke` directly outside `src/lib/tauri/client.ts`.
-
-Rust owns:
-
-- WebView creation and bounds management
-- URL validation and navigation
-- JavaScript injection used for trusted ChatGPT input/upload automation
-- Live Captions discovery and UI Automation access
-- Screenshot capture and temporary image handling
-- Global shortcut registration
-- Automation state and workflow sequencing
-
-This keeps native APIs and privileged operations outside the remote ChatGPT page.
-
-## Dependencies
-
-### Frontend
-
-- `@tauri-apps/api`: frontend bridge to Tauri commands and events
-- `react`, `react-dom`: UI layer
-- `vite`, `typescript`, `eslint`, `prettier`: development, build, and quality tooling
-
-### Rust
-
-- `tauri`: desktop shell, commands, events, WebView integration
-- `serde`, `serde_json`: typed command payloads and state serialization
-- `windows`: Win32 and UI Automation bindings
-- `png`: PNG encoding for captured screenshots
-- `base64`: screenshot transfer into browser-side upload automation
-
-Security impact: native capabilities are exposed only through explicit Tauri commands, and command payloads should remain validated at the Rust boundary.
-
-Maintenance impact: Windows integrations are intentionally centralized in Rust so platform-specific risk does not leak into the React UI.
+- Windows 11.
+- Windows Live Captions for caption workflows.
+- Node.js 20.11 or newer.
+- npm 10 or newer.
+- A stable Rust toolchain with the MSVC Windows target.
+- Microsoft Edge WebView2 Runtime.
 
 ## Development
 
 Install dependencies:
 
-```bash
-npm install
-```
+    npm install
 
-Run the desktop app in development:
+Run the desktop app:
 
-```bash
-npm run tauri:dev
-```
+    npm run tauri:dev
 
 Run frontend checks:
 
-```bash
-npm run typecheck
-npm run lint
-npm run build
-```
+    npm run typecheck
+    npm run lint
+    npm run build
+    npm run format:check
 
 Run Rust checks:
 
-```bash
-npm run rust:check
-cargo test --manifest-path src-tauri/Cargo.toml
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-```
+    cargo check --manifest-path src-tauri/Cargo.toml
+    cargo test --manifest-path src-tauri/Cargo.toml
+    cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
-Build the Windows installer:
+Build the NSIS Windows installer:
 
-```bash
-npm run tauri -- build
-```
-
-The current bundle target is NSIS.
+    npm run tauri -- build
 
 ## Manual Test Checklist
 
-1. Launch the app with `npm run tauri:dev`.
-2. Confirm ChatGPT loads and login persists after restart.
-3. Test back, forward, refresh, home, URL navigation, and clear session.
-4. Start Windows Live Captions from the toolbar.
-5. Confirm caption status updates when Live Captions emits text.
-6. Use `Submit Caption` and confirm cleaned caption text appears in ChatGPT input.
-7. Test `Ctrl+Enter` for caption submit.
-8. Test `Ctrl+Shift+Enter` for screenshot plus caption upload and submit.
-9. Test `Ctrl+Shift+S` for screenshot upload only.
-10. Test `Ctrl+Arrow` window movement and `Ctrl+\\` window visibility toggle.
-11. Confirm temporary screenshot files do not accumulate after successful upload.
+1. Launch the app and confirm the window stays above another application.
+2. Confirm ChatGPT loads and its login session survives an app restart.
+3. Test Back, Refresh, Home, URL navigation, minimize, close, and resizing.
+4. Test transparency and content protection.
+5. Confirm Transparency, Settings, and Profiles close after clicking elsewhere.
+6. Confirm outside-click dismissal does not save profile edits or apply settings.
+7. Start Windows Live Captions and verify new speech is collected.
+8. Press Clear, continue speaking, and verify Mode 1/2 uses only captions collected after Clear.
+9. Test all three automation modes with their configured shortcuts.
+10. Create and save multiple profiles.
+11. Confirm selecting a profile row does not activate it.
+12. Activate the selected profile with the Active icon.
+13. Restart and confirm all profiles and the active selection are restored.
+14. Change the active profile from the bottom dropdown.
+15. Confirm Mode 1/2 appends the active profile prompt at the end.
+16. Change shortcuts and verify duplicate-shortcut validation.
+17. Test window movement and the Hide / Show shortcut.
+18. Confirm temporary screenshot files do not accumulate after successful uploads.
 
-## Known Risks
+## Known Limitations
 
-- ChatGPT DOM structure may change, which can break input focus, attachment upload, or upload completion detection.
-- Live Captions UI Automation element structure can vary across Windows builds and languages.
-- Caption monitoring currently uses bounded UIA polling rather than a robust text-change event subscription.
-- Screenshot capture currently targets the primary display through GDI; multi-monitor and protected-content handling need more work.
-- Global shortcut registration can fail if another application already owns the same accelerator.
-- Screenshots may contain sensitive information, so retention must remain short and cleanup must be reliable.
+- ChatGPT DOM changes can break prompt insertion, attachment upload, or upload-completion detection.
+- Windows Live Captions UI Automation structure can vary between Windows versions and languages.
+- Caption capture uses bounded polling instead of a native text-change subscription.
+- Screenshot capture currently targets the primary display.
+- Global shortcut registration can fail when another application owns the same accelerator.
+- Content protection depends on Windows and capture-tool support.
 
 ## Security Notes
 
-- Do not expose broad filesystem, shell, or arbitrary JavaScript execution commands to the frontend.
-- Keep all IPC commands small, typed, and validated.
-- Treat text from Live Captions and the ChatGPT page as untrusted input.
-- Keep screenshot files in an application-controlled temporary location and delete them after use.
-- Prefer explicit allowlists for URLs and automation targets.
-
-## Production Roadmap
-
-1. Refactor Rust modules into folder-based services and Windows adapters.
-2. Replace heuristic ChatGPT DOM upload tracking with a more resilient observer strategy.
-3. Add configurable shortcuts with conflict detection and persistence.
-4. Add multi-monitor screenshot support.
-5. Add stricter command validation and a dedicated security module.
-6. Add integration tests around command contracts and automation state transitions.
-7. Add installer signing, release metadata, crash reporting, and update strategy.
+- Keep native capabilities behind small, typed, validated Tauri commands.
+- Treat Live Captions text and ChatGPT page content as untrusted input.
+- Restrict browser automation and navigation to explicitly allowed targets.
+- Keep screenshots in an application-controlled temporary location and delete them promptly.
+- Do not expose broad filesystem, shell, or arbitrary JavaScript execution capabilities to the remote page.
