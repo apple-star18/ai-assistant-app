@@ -172,25 +172,15 @@ pub fn captions_clear(
 
 pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<CaptionStore>();
-    let monitor = state
-        .monitor
-        .lock()
-        .map_err(|_| "Caption monitor state is unavailable.".to_string())?
-        .take();
-
-    if let Some(monitor) = monitor {
-        monitor.stop_requested.store(true, Ordering::Release);
-        // Let the monitor observe cancellation and release its UI Automation objects. Because
-        // it was removed from the store first, a late exit cannot overwrite the reset snapshot.
-        thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
-    }
-
     let next_snapshot = {
         let mut snapshot = state
             .snapshot
             .lock()
             .map_err(|_| "Caption state is unavailable.".to_string())?;
-        *snapshot = CaptionSnapshot::default();
+        // Home starts a fresh collection boundary without restarting Windows Live Captions or
+        // this app's UI Automation monitor. The next poll therefore continues collecting only
+        // speech that appears after Home was pressed.
+        clear_caption_collection(&mut snapshot);
         snapshot.clone()
     };
     let _ = app.emit_to(MAIN_WINDOW_LABEL, CAPTION_EVENT, next_snapshot);
@@ -1386,10 +1376,16 @@ mod tests {
     #[test]
     fn clearing_starts_a_new_batch_at_the_current_live_caption_boundary() {
         let mut snapshot = CaptionSnapshot::default();
+        snapshot.is_monitoring = true;
+        snapshot.window_found = true;
+        snapshot.text_element_found = true;
         push_caption(&mut snapshot, "Before clear.".to_string());
 
         clear_caption_collection(&mut snapshot);
 
+        assert!(snapshot.is_monitoring);
+        assert!(snapshot.window_found);
+        assert!(snapshot.text_element_found);
         assert!(snapshot.current_caption_text.is_empty());
         assert!(snapshot.pending_caption_text.is_empty());
         assert!(snapshot.latest_caption.is_empty());

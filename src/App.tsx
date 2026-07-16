@@ -979,6 +979,7 @@ function BrowserWindow() {
                 }}
                 onBlur={() => {
                   isAddressEditingRef.current = false;
+                  setAddress(browserState.currentUrl);
                 }}
               />
             </label>
