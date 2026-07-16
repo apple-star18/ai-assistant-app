@@ -172,25 +172,15 @@ pub fn captions_clear(
 
 pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<CaptionStore>();
-    let monitor = state
-        .monitor
-        .lock()
-        .map_err(|_| "Caption monitor state is unavailable.".to_string())?
-        .take();
-
-    if let Some(monitor) = monitor {
-        monitor.stop_requested.store(true, Ordering::Release);
-        // Let the monitor observe cancellation and release its UI Automation objects. Because
-        // it was removed from the store first, a late exit cannot overwrite the reset snapshot.
-        thread::sleep(POLL_INTERVAL + Duration::from_millis(100));
-    }
-
     let next_snapshot = {
         let mut snapshot = state
             .snapshot
             .lock()
             .map_err(|_| "Caption state is unavailable.".to_string())?;
-        *snapshot = CaptionSnapshot::default();
+        // Home starts a fresh collection boundary without restarting Windows Live Captions or
+        // this app's UI Automation monitor. The next poll therefore continues collecting only
+        // speech that appears after Home was pressed.
+        clear_caption_collection(&mut snapshot);
         snapshot.clone()
     };
     let _ = app.emit_to(MAIN_WINDOW_LABEL, CAPTION_EVENT, next_snapshot);
@@ -600,6 +590,22 @@ fn merge_caption_capture(
         return current_visible.to_string();
     }
 
+    // UI Automation can alternate between a short rolling caption and a larger document
+    // snapshot. Compare normalized words before using the character-level fast paths so a
+    // change in punctuation, capitalization, or one recently recognized word does not make the
+    // larger snapshot look like unrelated new speech.
+    if source_contains_similar_sequence(current_visible, accumulated) {
+        return current_visible.to_string();
+    }
+
+    if source_contains_similar_sequence(accumulated, current_visible) {
+        return accumulated.to_string();
+    }
+
+    if let Some(delta) = caption_delta_after_boundary(current_visible, accumulated) {
+        return append_caption_text(accumulated, &delta);
+    }
+
     if previous_visible.is_empty() {
         return merge_rolling_text(accumulated, current_visible);
     }
@@ -681,7 +687,232 @@ fn pending_caption_text(current: &str, last_submitted: &str) -> String {
         return current[overlap_end..].trim().to_string();
     }
 
+    if let Some(delta) = caption_delta_after_boundary(current, last_submitted) {
+        return delta;
+    }
+
     current.to_string()
+}
+
+#[derive(Debug)]
+struct SourceToken {
+    normalized: String,
+    start: usize,
+}
+
+fn caption_delta_after_boundary(current: &str, previous: &str) -> Option<String> {
+    let current_tokens = source_tokens(current);
+    let previous_tokens = source_tokens(previous);
+
+    if current_tokens.is_empty() || previous_tokens.is_empty() {
+        return None;
+    }
+
+    // The caption window sometimes rolls backward to an older or shorter view. Nothing in that
+    // view is new when it can already be located in the previous source snapshot.
+    if find_similar_sequence(&previous_tokens, &current_tokens).is_some() {
+        return Some(String::new());
+    }
+
+    // The common case is a growing document snapshot: find the previous snapshot inside the
+    // current one and return only the words following it.
+    if let Some(start) = find_similar_sequence(&current_tokens, &previous_tokens) {
+        return Some(text_after_tokens(
+            current,
+            &current_tokens,
+            start + previous_tokens.len(),
+        ));
+    }
+
+    // For a rolling window, only a suffix of the previous snapshot remains visible. The overlap
+    // may begin anywhere in the current UIA snapshot because the selected accessibility element
+    // can also switch between a short caption line and the full caption document.
+    if let Some((start, overlap_len)) =
+        find_similar_suffix_in_current(&previous_tokens, &current_tokens)
+    {
+        return Some(text_after_tokens(
+            current,
+            &current_tokens,
+            start + overlap_len,
+        ));
+    }
+
+    None
+}
+
+fn source_contains_similar_sequence(source: &str, candidate: &str) -> bool {
+    let source_words = source_tokens(source);
+    let candidate_tokens = source_tokens(candidate);
+
+    !candidate_tokens.is_empty()
+        && tokens_have_minimum_strength(&candidate_tokens)
+        && find_similar_sequence(&source_words, &candidate_tokens).is_some()
+}
+
+fn source_tokens(text: &str) -> Vec<SourceToken> {
+    let mut tokens = Vec::new();
+    let mut normalized = String::new();
+    let mut token_start = None;
+
+    for (index, character) in text.char_indices() {
+        if character.is_alphanumeric() {
+            token_start.get_or_insert(index);
+            normalized.extend(character.to_lowercase());
+        } else if let Some(start) = token_start.take() {
+            tokens.push(SourceToken {
+                normalized: std::mem::take(&mut normalized),
+                start,
+            });
+        }
+    }
+
+    if let Some(start) = token_start {
+        tokens.push(SourceToken { normalized, start });
+    }
+
+    tokens
+}
+
+fn find_similar_sequence(haystack: &[SourceToken], needle: &[SourceToken]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() || !tokens_have_minimum_strength(needle) {
+        return None;
+    }
+
+    haystack
+        .windows(needle.len())
+        .position(|window| token_sequences_are_similar(window, needle))
+}
+
+fn find_similar_suffix_in_current(
+    previous: &[SourceToken],
+    current: &[SourceToken],
+) -> Option<(usize, usize)> {
+    let mut best_match = None;
+
+    for current_end in 1..=current.len() {
+        let maximum_overlap = previous.len().min(current_end);
+        let mut mismatches = 0;
+        let mut matched_characters = 0;
+
+        for overlap_len in 1..=maximum_overlap {
+            let previous_token = &previous[previous.len() - overlap_len];
+            let current_token = &current[current_end - overlap_len];
+
+            if tokens_are_similar(&previous_token.normalized, &current_token.normalized) {
+                matched_characters += previous_token
+                    .normalized
+                    .chars()
+                    .count()
+                    .min(current_token.normalized.chars().count());
+            } else {
+                mismatches += 1;
+            }
+
+            let allowed_mismatches = allowed_token_mismatches(overlap_len);
+            if matched_characters < MIN_SOURCE_OVERLAP_CHARS || mismatches > allowed_mismatches {
+                continue;
+            }
+
+            let start = current_end - overlap_len;
+            let should_replace = best_match.map_or(true, |(best_start, best_len)| {
+                overlap_len > best_len || (overlap_len == best_len && start < best_start)
+            });
+            if should_replace {
+                best_match = Some((start, overlap_len));
+            }
+        }
+    }
+
+    best_match
+}
+
+fn token_sequences_are_similar(left: &[SourceToken], right: &[SourceToken]) -> bool {
+    if left.len() != right.len() || left.is_empty() {
+        return false;
+    }
+
+    let mismatches = left
+        .iter()
+        .zip(right)
+        .filter(|(left, right)| !tokens_are_similar(&left.normalized, &right.normalized))
+        .count();
+    let allowed_mismatches = allowed_token_mismatches(left.len());
+
+    mismatches <= allowed_mismatches
+}
+
+fn allowed_token_mismatches(token_count: usize) -> usize {
+    if token_count >= 4 {
+        (token_count / 8).max(1)
+    } else {
+        0
+    }
+}
+
+fn tokens_are_similar(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+
+    let shorter_len = left.chars().count().min(right.chars().count());
+    if shorter_len >= 4 && (left.starts_with(right) || right.starts_with(left)) {
+        return true;
+    }
+
+    shorter_len >= 4 && is_one_edit_apart(left, right)
+}
+
+fn is_one_edit_apart(left: &str, right: &str) -> bool {
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    let length_difference = left.len().abs_diff(right.len());
+    if length_difference > 1 {
+        return false;
+    }
+
+    let (shorter, longer) = if left.len() <= right.len() {
+        (&left, &right)
+    } else {
+        (&right, &left)
+    };
+    let mut shorter_index = 0;
+    let mut longer_index = 0;
+    let mut edits = 0;
+
+    while shorter_index < shorter.len() && longer_index < longer.len() {
+        if shorter[shorter_index] == longer[longer_index] {
+            shorter_index += 1;
+            longer_index += 1;
+            continue;
+        }
+
+        edits += 1;
+        if edits > 1 {
+            return false;
+        }
+
+        if shorter.len() == longer.len() {
+            shorter_index += 1;
+        }
+        longer_index += 1;
+    }
+
+    edits + usize::from(longer_index < longer.len()) <= 1
+}
+
+fn tokens_have_minimum_strength(tokens: &[SourceToken]) -> bool {
+    tokens
+        .iter()
+        .map(|token| token.normalized.chars().count())
+        .sum::<usize>()
+        >= MIN_SOURCE_OVERLAP_CHARS
+}
+
+fn text_after_tokens(text: &str, tokens: &[SourceToken], consumed_tokens: usize) -> String {
+    tokens
+        .get(consumed_tokens)
+        .map(|token| text[token.start..].trim().to_string())
+        .unwrap_or_default()
 }
 
 fn longest_source_overlap_end(current: &str, previous: &str) -> Option<usize> {
@@ -938,6 +1169,39 @@ mod tests {
     }
 
     #[test]
+    fn pending_caption_text_ignores_case_and_punctuation_revisions() {
+        assert_eq!(
+            pending_caption_text(
+                "The user information is stored in the actual token. Which means it is stored on the client.",
+                "the user information is stored in the actual token"
+            ),
+            "Which means it is stored on the client."
+        );
+    }
+
+    #[test]
+    fn pending_caption_text_tolerates_a_corrected_recognition_word() {
+        assert_eq!(
+            pending_caption_text(
+                "The user information is stored in the JSON Web Token. It has three distinct parts.",
+                "The user information is stored in the Jason Web Token."
+            ),
+            "It has three distinct parts."
+        );
+    }
+
+    #[test]
+    fn pending_caption_text_uses_a_rolling_word_level_boundary() {
+        assert_eq!(
+            pending_caption_text(
+                "The actual token remains visible. New words arrive now.",
+                "An older opening rolled away. The actual token remains visible."
+            ),
+            "New words arrive now."
+        );
+    }
+
+    #[test]
     fn push_caption_tracks_only_text_after_last_submit_boundary() {
         let mut snapshot = CaptionSnapshot::default();
 
@@ -993,6 +1257,86 @@ mod tests {
     }
 
     #[test]
+    fn push_caption_replaces_a_short_fragment_with_the_full_snapshot() {
+        let mut snapshot = CaptionSnapshot::default();
+
+        push_caption(
+            &mut snapshot,
+            "Anything which is great because the server".to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "User information is stored in the token. Anything, which is great because the server does not remember it."
+                .to_string(),
+        );
+
+        assert_eq!(
+            snapshot.pending_caption_text,
+            "User information is stored in the token. Anything, which is great because the server does not remember it."
+        );
+    }
+
+    #[test]
+    fn push_caption_replaces_a_growing_snapshot_after_a_word_correction() {
+        let mut snapshot = CaptionSnapshot::default();
+
+        push_caption(
+            &mut snapshot,
+            "User information is stored in the Jason Web Token.".to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "User information is stored in the JSON Web Token. The server remains stateless."
+                .to_string(),
+        );
+
+        assert_eq!(
+            snapshot.pending_caption_text,
+            "User information is stored in the JSON Web Token. The server remains stateless."
+        );
+    }
+
+    #[test]
+    fn push_caption_does_not_append_alternating_fragments_and_full_snapshots() {
+        let mut snapshot = CaptionSnapshot::default();
+
+        push_caption(
+            &mut snapshot,
+            "User information is stored in the actual token.".to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "actual token. The server does not remember anything.".to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "User information is stored in the actual token. The server doesn't remember anything. This works across multiple servers."
+                .to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "multiple servers. The token contains a payload.".to_string(),
+        );
+        push_caption(
+            &mut snapshot,
+            "User information is stored in the actual token. The server doesn't remember anything. This works across multiple servers. The token contains the payload. The signature verifies it."
+                .to_string(),
+        );
+
+        assert_eq!(
+            snapshot.pending_caption_text,
+            "User information is stored in the actual token. The server doesn't remember anything. This works across multiple servers. The token contains the payload. The signature verifies it."
+        );
+        assert_eq!(
+            snapshot
+                .pending_caption_text
+                .matches("User information is stored")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn taking_a_batch_starts_the_next_batch_at_the_hotkey_boundary() {
         let mut snapshot = CaptionSnapshot::default();
         push_caption(&mut snapshot, "Before hotkey.".to_string());
@@ -1009,12 +1353,39 @@ mod tests {
     }
 
     #[test]
+    fn taking_a_batch_survives_a_revised_full_snapshot_after_the_hotkey() {
+        let mut snapshot = CaptionSnapshot::default();
+        push_caption(
+            &mut snapshot,
+            "The user is identified by the Jason Web Token.".to_string(),
+        );
+
+        assert_eq!(
+            take_caption_batch_from_snapshot(&mut snapshot, false).expect("caption batch"),
+            "The user is identified by the Jason Web Token."
+        );
+
+        push_caption(
+            &mut snapshot,
+            "The user is identified by the JSON Web Token. The server stays stateless.".to_string(),
+        );
+
+        assert_eq!(snapshot.pending_caption_text, "The server stays stateless.");
+    }
+
+    #[test]
     fn clearing_starts_a_new_batch_at_the_current_live_caption_boundary() {
         let mut snapshot = CaptionSnapshot::default();
+        snapshot.is_monitoring = true;
+        snapshot.window_found = true;
+        snapshot.text_element_found = true;
         push_caption(&mut snapshot, "Before clear.".to_string());
 
         clear_caption_collection(&mut snapshot);
 
+        assert!(snapshot.is_monitoring);
+        assert!(snapshot.window_found);
+        assert!(snapshot.text_element_found);
         assert!(snapshot.current_caption_text.is_empty());
         assert!(snapshot.pending_caption_text.is_empty());
         assert!(snapshot.latest_caption.is_empty());

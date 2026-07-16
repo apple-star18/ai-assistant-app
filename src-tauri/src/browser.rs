@@ -14,13 +14,13 @@ use tauri::{
     App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
     Size, State, Url, WebviewUrl, Window, WindowEvent,
 };
-use webview2_com::FocusChangedEventHandler;
-use windows::Win32::Foundation::COLORREF;
+use webview2_com::{take_pwstr, FocusChangedEventHandler, SourceChangedEventHandler};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowDisplayAffinity, GetWindowLongPtrW, SetLayeredWindowAttributes,
     SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA, WDA_EXCLUDEFROMCAPTURE,
     WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED,
 };
+use windows::{core::PWSTR, Win32::Foundation::COLORREF};
 
 use crate::{automation, captions};
 
@@ -261,6 +261,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .window()
         .add_child(browser, bounds.position, bounds.size)?;
     let browser_focus_app_handle = app.handle().clone();
+    let browser_source_app_handle = app.handle().clone();
     browser.with_webview(move |webview| {
         let focus_handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
             let _ = browser_focus_app_handle.emit(BROWSER_FOCUSED_EVENT, ());
@@ -272,6 +273,26 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 .controller()
                 .add_GotFocus(&focus_handler, &mut token)
         };
+
+        if let Ok(browser) = unsafe { webview.controller().CoreWebView2() } {
+            let source_handler = SourceChangedEventHandler::create(Box::new(move |sender, _| {
+                let Some(sender) = sender else {
+                    return Ok(());
+                };
+                let mut source = PWSTR::null();
+                unsafe { sender.Source(&mut source)? };
+                let current_url = take_pwstr(source);
+
+                if !current_url.is_empty() {
+                    update_snapshot(&browser_source_app_handle, |snapshot| {
+                        snapshot.current_url = current_url;
+                    });
+                }
+
+                Ok(())
+            }));
+            let _ = unsafe { browser.add_SourceChanged(&source_handler, &mut token) };
+        }
     })?;
     browser.set_zoom(initial_browser_scale)?;
     update_snapshot(app.handle(), |snapshot| {
@@ -373,13 +394,25 @@ pub fn browser_get_state(
 }
 
 #[tauri::command]
-pub fn browser_open_home(
+pub async fn browser_open_home(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
-    automation::reset_for_home(&app).map_err(BrowserCommandError::automation)?;
-    captions::reset_for_home(&app).map_err(BrowserCommandError::automation)?;
-    let _ = clear_chatgpt_composer(&app, Duration::from_secs(3));
+    // Worker cancellation and composer cleanup can wait for WebView callbacks. Keeping this work
+    // off the UI thread lets those callbacks finish immediately and avoids multi-second stalls.
+    let home_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        automation::reset_for_home(&home_app)?;
+        captions::reset_for_home(&home_app)?;
+        let _ = clear_chatgpt_composer(&home_app, Duration::from_secs(3));
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|error| {
+        BrowserCommandError::automation(format!("Failed to prepare browser home: {error}"))
+    })?
+    .map_err(BrowserCommandError::automation)?;
+
     navigate_to(&app, &state, CHATGPT_HOME_URL)
 }
 
@@ -393,14 +426,24 @@ pub fn browser_navigate(
 }
 
 #[tauri::command]
-pub fn browser_reload(
+pub async fn browser_reload(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
     // Hold the reset guard through the reload call so no new automation can start
     // between cancellation and WebView navigation.
+    // Reading the live ChatGPT draft waits for a WebView callback. Run that blocking wait away
+    // from the UI thread so the callback can complete immediately instead of hitting its timeout.
+    let refresh_app = app.clone();
     let _reset_guard =
-        automation::prepare_for_refresh(&app).map_err(BrowserCommandError::automation)?;
+        tauri::async_runtime::spawn_blocking(move || automation::prepare_for_refresh(&refresh_app))
+            .await
+            .map_err(|error| {
+                BrowserCommandError::automation(format!(
+                    "Failed to prepare browser refresh: {error}"
+                ))
+            })?
+            .map_err(BrowserCommandError::automation)?;
     let browser = app.browser_webview()?;
     browser.reload().map_err(BrowserCommandError::from_tauri)?;
 

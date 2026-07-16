@@ -4,7 +4,7 @@ use std::{
         Arc, Mutex, MutexGuard,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use serde::Serialize;
@@ -20,7 +20,6 @@ const CHATGPT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 const CHATGPT_SUBMIT_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTACHMENT_DISCARD_TIMEOUT: Duration = Duration::from_secs(3);
 const MODE_3_COORDINATOR_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const AUTOMATION_RESET_TIMEOUT: Duration = Duration::from_secs(7);
 const AUTOMATION_CANCELLED: &str = "Automation was cancelled by browser navigation.";
 
 #[derive(Debug, Clone, Serialize)]
@@ -559,28 +558,6 @@ fn begin_navigation_reset(app: &AppHandle) -> Result<NavigationResetGuard, Strin
     })
 }
 
-fn wait_for_automation_workers(app: &AppHandle) -> Result<(), String> {
-    let automation = app.state::<AutomationStore>();
-    let started_at = Instant::now();
-
-    while started_at.elapsed() < AUTOMATION_RESET_TIMEOUT {
-        let caption_running = automation.caption_workflow_reserved.load(Ordering::Acquire);
-        let mode_3_running = automation
-            .mode_3_coordinator
-            .state
-            .lock()
-            .map(|state| state.active_jobs > 0 || state.finalizing)
-            .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
-
-        if !caption_running && !mode_3_running {
-            return Ok(());
-        }
-        thread::sleep(MODE_3_COORDINATOR_POLL_INTERVAL);
-    }
-
-    Err("Timed out waiting for automation workers to exit.".to_string())
-}
-
 pub(crate) fn prepare_for_refresh(app: &AppHandle) -> Result<NavigationResetGuard, String> {
     let guard = begin_navigation_reset(app)?;
     let automation = app.state::<AutomationStore>();
@@ -632,7 +609,6 @@ pub(crate) fn prepare_for_refresh(app: &AppHandle) -> Result<NavigationResetGuar
 
 pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
     let _guard = begin_navigation_reset(app)?;
-    wait_for_automation_workers(app)?;
     let automation = app.state::<AutomationStore>();
     for memory in [&automation.prepared_prompt, &automation.refresh_prompt] {
         let mut text = memory
@@ -647,6 +623,8 @@ pub fn reset_for_home(app: &AppHandle) -> Result<(), String> {
     automation
         .refresh_prompt_restored
         .store(false, Ordering::Release);
+    // Cancellation epochs and the Mode 3 generation guard prevent stale workers from mutating
+    // the new session, so Home can reset immediately without waiting for their timeout loops.
     reset_automation_runtime(app)
 }
 
