@@ -76,7 +76,7 @@ select:focus-visible {
   grid-template-rows: auto 1fr auto;
   border: 2px solid transparent;
   background: transparent;
-  padding: 10px;
+  padding: 4px;
 }
 
 .browser-shell.protected {

@@ -110,7 +110,7 @@ const SETTINGS_OVERLAY_MARGIN = 8;
 const PROFILE_OVERLAY_WIDTH = 620;
 const PROFILE_OVERLAY_HEIGHT = 430;
 const PROFILE_OVERLAY_MARGIN = 8;
-const WINDOW_CONTENT_INSET = 12;
+const WINDOW_CONTENT_INSET = 6;
 const WINDOW_RESIZE_HANDLES: ReadonlyArray<{
   direction: WindowResizeDirection;
   position: string;

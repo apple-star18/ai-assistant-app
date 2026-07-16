@@ -56,14 +56,18 @@ function renderProfileList() {
   const rows = profileState.profiles.map((profile) => {
     const row = document.createElement('div');
     row.className = profile.id === selectedProfileId ? 'profile-row selected' : 'profile-row';
+    row.addEventListener('click', (event) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('.delete-button')) {
+        return;
+      }
+      selectProfile(profile.id);
+    });
 
     const selectButton = document.createElement('button');
     selectButton.className = 'profile-select';
     selectButton.type = 'button';
     selectButton.title = profile.name;
-    selectButton.addEventListener('click', () => {
-      selectProfile(profile.id);
-    });
 
     const profileName = document.createElement('span');
     profileName.className = 'profile-name';
