@@ -16,9 +16,11 @@ pub fn run() {
         .manage(hotkeys::HotkeyStore::default())
         .manage(profiles::ProfileStore::default())
         .setup(|app| {
+            // Profile WebViews request their state as soon as they load, so restore the
+            // persisted snapshot before creating any of the browser child WebViews.
+            profiles::setup(app.handle());
             browser::setup(app)?;
             hotkeys::setup(app.handle());
-            profiles::setup(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
