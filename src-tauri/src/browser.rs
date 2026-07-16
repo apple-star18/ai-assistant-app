@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{
     webview::{Color, DownloadEvent, NewWindowResponse, PageLoadEvent, WebviewBuilder},
-    App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize, Position, Rect,
-    Size, State, Url, WebviewUrl, Window, WindowEvent,
+    App, AppHandle, DragDropEvent, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalSize,
+    Position, Rect, Size, State, Url, WebviewEvent, WebviewUrl, Window, WindowEvent,
 };
 use webview2_com::{take_pwstr, FocusChangedEventHandler, SourceChangedEventHandler};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -262,6 +262,22 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .add_child(browser, bounds.position, bounds.size)?;
     let browser_focus_app_handle = app.handle().clone();
     let browser_source_app_handle = app.handle().clone();
+    let browser_drop_app_handle = app.handle().clone();
+    browser.on_webview_event(move |event| {
+        let WebviewEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event else {
+            return;
+        };
+
+        let paths = paths.clone();
+        let app_handle = browser_drop_app_handle.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = upload_dropped_files_to_chatgpt_input(&app_handle, &paths) {
+                update_snapshot(&app_handle, |snapshot| {
+                    snapshot.last_error = Some(format!("File drop failed: {error}"));
+                });
+            }
+        });
+    });
     browser.with_webview(move |webview| {
         let focus_handler = FocusChangedEventHandler::create(Box::new(move |_, _| {
             let _ = browser_focus_app_handle.emit(BROWSER_FOCUSED_EVENT, ());
@@ -1460,6 +1476,111 @@ pub fn upload_screenshot_to_chatgpt_input(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
         ))
+    }
+}
+
+fn upload_dropped_files_to_chatgpt_input(app: &AppHandle, paths: &[PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("No files were included in the drop.".to_string());
+    }
+
+    let uploads = paths
+        .iter()
+        .map(|path| {
+            if !path.is_file() {
+                return Err(format!(
+                    "Only files can be dropped: {}",
+                    path.to_string_lossy()
+                ));
+            }
+
+            let name = path
+                .file_name()
+                .ok_or_else(|| format!("The dropped path has no file name: {}", path.display()))?
+                .to_string_lossy();
+            let bytes = fs::read(path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+
+            Ok(serde_json::json!({
+                "name": name,
+                "mimeType": mime_type_for_path(path),
+                "base64": BASE64_STANDARD.encode(bytes),
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let encoded_uploads = serde_json::to_string(&uploads)
+        .map_err(|error| format!("Failed to encode dropped files: {error}"))?;
+    let script = format!(
+        r#"
+(() => {{
+  const uploads = {encoded_uploads};
+  const transfer = new DataTransfer();
+
+  for (const upload of uploads) {{
+    const binary = atob(upload.base64);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let index = 0; index < binary.length; index += 1) {{
+      bytes[index] = binary.charCodeAt(index);
+    }}
+
+    transfer.items.add(new File([bytes], upload.name, {{ type: upload.mimeType }}));
+  }}
+
+  const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+  const input = inputs.find((candidate) => candidate.multiple) || inputs[0];
+
+  if (!input) {{
+    return {{ ok: false, reason: 'file_input_not_found' }};
+  }}
+
+  input.files = transfer.files;
+  input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  window.__aiAssistantUploadStartedAt = Date.now();
+
+  return {{ ok: true, fileCount: transfer.files.length }};
+}})();
+"#
+    );
+    let result = eval_json(app, script)?;
+
+    if result.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err(format!(
+            "ChatGPT file input was not available: {}",
+            result
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ))
+    }
+}
+
+fn mime_type_for_path(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("txt" | "log" | "md") => "text/plain",
+        Some("csv") => "text/csv",
+        Some("json") => "application/json",
+        Some("doc") => "application/msword",
+        Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        Some("xls") => "application/vnd.ms-excel",
+        Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Some("ppt") => "application/vnd.ms-powerpoint",
+        Some("pptx") => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
     }
 }
 
