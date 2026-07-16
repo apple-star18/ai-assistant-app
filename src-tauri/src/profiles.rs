@@ -79,8 +79,11 @@ pub fn setup(app: &AppHandle) {
     let Ok(Some(snapshot)) = load_profiles(app) else {
         return;
     };
+    let snapshot = normalize_snapshot(snapshot);
     if let Ok(mut stored) = app.state::<ProfileStore>().snapshot.lock() {
-        *stored = normalize_snapshot(snapshot);
+        *stored = snapshot.clone();
+        drop(stored);
+        emit_profile_state(app, &snapshot);
     }
 }
 
