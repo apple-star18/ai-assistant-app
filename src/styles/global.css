@@ -321,13 +321,22 @@ select:focus-visible {
 }
 
 .mouse-through-button {
-  color: #d9f3dc;
+  color: #9aa6b5;
 }
 
-.mouse-through-button:hover,
+.mouse-through-button:hover {
+  background: #25303c;
+  color: #e5ebf2;
+}
+
 .mouse-through-button.active {
-  background: #1b3425;
-  color: #effff0;
+  background: #1b4931;
+  color: #edfff3;
+  box-shadow: inset 0 0 0 1px #55b87b;
+}
+
+.mouse-through-button.active:hover {
+  background: #235c3e;
 }
 
 .browser-shell.glass {

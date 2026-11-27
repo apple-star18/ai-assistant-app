@@ -1060,12 +1060,12 @@ function BrowserWindow() {
                 browserState.mouseThrough ? 'mouse-through-button active' : 'mouse-through-button'
               }
               type="button"
-              title={`Mouse through: ${browserState.mouseThrough ? 'on' : 'off'} (${mouseThroughShortcut})`}
-              aria-label="Toggle mouse through"
+              title={`Mouse Through ${browserState.mouseThrough ? 'ON' : 'OFF'} (${mouseThroughShortcut})`}
+              aria-label={`Mouse Through ${browserState.mouseThrough ? 'on' : 'off'}`}
               aria-pressed={browserState.mouseThrough}
               onClick={() => void toggleMouseThrough()}
             >
-              <MouseThroughIcon />
+              {browserState.mouseThrough ? <MouseThroughOnIcon /> : <MouseThroughOffIcon />}
             </button>
 
             <button
@@ -1254,11 +1254,20 @@ function ProfileIcon() {
   );
 }
 
-function MouseThroughIcon() {
+function MouseThroughOnIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
       <path d="M5 3v15l4-4 3 7 3-1-3-7h6L5 3Z" />
       <path d="m16 4 3-2M18 8h4" />
+    </svg>
+  );
+}
+
+function MouseThroughOffIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M5 3v15l4-4 3 7 3-1-3-7h6L5 3Z" />
+      <path d="M3 21 21 3" />
     </svg>
   );
 }
