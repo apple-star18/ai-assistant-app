@@ -14,6 +14,8 @@ The app combines ChatGPT with Windows Live Captions, screen capture, reusable pr
 - Uses a frameless window with custom minimize, close, and resize controls.
 - Stays above other applications while visible.
 - Supports hiding and showing the complete app with a global shortcut.
+- Mouse Through keeps the window visible while mouse clicks, scrolling, and dragging reach the window underneath. Press its global shortcut again to restore mouse control.
+- Type Message (`Ctrl+Shift+T`) captures English typing for the ChatGPT composer while the current Windows app keeps focus. The captured keys do not reach that app. Press Enter to send, Esc to cancel, or the shortcut again to stop capturing. Changing the foreground window also stops capture.
 
 ### Live Captions collection
 
@@ -31,6 +33,10 @@ The app combines ChatGPT with Windows Live Captions, screen capture, reusable pr
 | Mode 1: Caption Submit    | `Ctrl+Enter`       | Takes the current caption batch, builds a prompt, inserts it into ChatGPT, and submits it.                                                                                                           |
 | Mode 2: Capture + Caption | `Ctrl+Shift+Enter` | Captures the primary display, combines it with the current caption batch, uploads the image, and submits the prompt. Mode 2 can also run with an empty caption batch.                                |
 | Mode 3: Capture Only      | `Ctrl+Shift+S`     | Captures the primary display and adds it to the current unsent ChatGPT composer. It does not consume captions or submit automatically, so it can be used repeatedly to build visual project context. |
+| Send Capture              | `Shift+Enter`      | Sends the Capture Only draft after its screenshots finish uploading, without moving keyboard focus from the current window.                                                                          |
+| New Chat + Instruction    | `Ctrl+Shift+N`     | Opens a new ChatGPT conversation and sends the active profile's Instruction as its first message once.                                                                                              |
+| Refresh                   | `Ctrl+Shift+R`     | Reloads the embedded ChatGPT page using the same Refresh workflow as the toolbar.                                                                                                                    |
+| Backward                  | `Ctrl+Shift+B`     | Goes back in the embedded ChatGPT page's history, like the toolbar Back button.                                                                                                                       |
 
 Additional workflow behavior:
 
@@ -38,6 +44,8 @@ Additional workflow behavior:
 - Home clears caption and automation runtime state before returning to ChatGPT home.
 - A Settings preference can keep the previous submitted Mode 1/2 prompt when new captions are added.
 - Workflow guards prevent repeated shortcuts from corrupting an active caption or screenshot batch.
+- Mode 3 cannot add screenshots during a Mode 1/2 submission. Mode 1/2 cannot start while Mode 3 is uploading or while its unsent screenshots remain in the composer.
+- Each screenshot upload is tracked separately, including when several Mode 3 captures are added to one draft.
 - Temporary screenshot files are removed after the upload workflow finishes.
 
 ### Mode 3 for live coding interviews
@@ -50,7 +58,7 @@ A typical workflow is:
 2. Press `Ctrl+Shift+S` to add a screenshot of the primary display to the current ChatGPT composer.
 3. Navigate to another relevant part of the project and press the shortcut again.
 4. Repeat until the composer contains enough screenshots to explain the current project and problem.
-5. Type the interview question or instruction in ChatGPT, review the attached screenshots, and submit once manually.
+5. Type the interview question or instruction in ChatGPT, review the attached screenshots, and press `Shift+Enter` to send the draft without moving focus from the current window.
 
 Each Mode 3 capture:
 
@@ -65,6 +73,8 @@ Mode 3 captures the complete primary display. Before using it, move private mess
 ### Prompt profiles
 
 Profiles are reusable instructions appended to Mode 1 and Mode 2 prompts.
+
+Each profile also has a separate Instruction. Only the New Chat + Instruction shortcut sends it, as the first message in the new conversation. App startup, Home, and Refresh do not send it. The shortcut is handled by the global keyboard hook so the focused window does not receive its final key.
 
 - Create, rename, edit, save, activate, and delete profiles.
 - All profiles and the active-profile selection are persisted in the app data directory.
@@ -91,25 +101,27 @@ Settings supports configurable shortcuts with duplicate detection:
 | Mode 3: Capture Only      | `Ctrl+Shift+S`     |
 | Move window               | `Ctrl+Arrow`       |
 | Hide / Show window        | `Ctrl+Backslash`   |
+| Mouse Through             | `Ctrl+Shift+M`     |
 
 Window movement uses 50-pixel steps and is clamped to the current monitor work area.
 
 ### Privacy and appearance
 
 - Transparency control adjusts the complete app window from 40% to 100% opacity.
-- Content protection asks Windows to exclude the app from supported screen-capture workflows.
+- Mouse Through starts off on every launch. Its toolbar button and global shortcut toggle the whole window; popovers close when it turns on.
+- Content protection is enabled on every app launch and asks Windows to exclude the app from supported screen-capture workflows. The eye button can change it for the current session.
 - The browser WebView is kept separate from the toolbar and bottom status bar, so app controls never modify the ChatGPT page layout.
 - Transparency, Settings, and Profiles popovers close when focus moves elsewhere.
 - Dismissing Settings or Profiles by clicking elsewhere does not apply or save pending changes.
 
 ## Toolbar
 
-From left to right, the toolbar contains:
+The single-row toolbar contains, from left to right:
 
 1. Back, Refresh, and Home.
 2. Settings and Profiles.
 3. Content protection and transparency.
-4. Address bar.
+4. Browser scale.
 5. Start/Stop Live Captions and Clear collected captions.
 6. Minimize and Close.
 
@@ -244,7 +256,8 @@ The generated installer is usable without a signing certificate, but Windows Sma
 15. Confirm Mode 1/2 appends the active profile prompt at the end.
 16. Change shortcuts and verify duplicate-shortcut validation.
 17. Test window movement and the Hide / Show shortcut.
-18. Confirm temporary screenshot files do not accumulate after successful uploads.
+18. Turn on Mouse Through above another app. Check that clicks, wheel input, and dragging reach that app across the ChatGPT area and toolbar; use the shortcut to restore mouse control.
+19. Confirm temporary screenshot files do not accumulate after successful uploads.
 
 ## Known Limitations
 

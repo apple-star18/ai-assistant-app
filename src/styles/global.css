@@ -165,10 +165,8 @@ select:focus-visible {
 }
 
 .browser-toolbar {
-  display: grid;
-  min-height: 82px;
-  grid-template-rows: repeat(2, 30px);
-  gap: 6px;
+  display: flex;
+  min-height: 46px;
   background: #07090d;
   overflow: visible;
   padding: 8px;
@@ -180,15 +178,8 @@ select:focus-visible {
   width: 100%;
   min-width: 0;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-}
-
-.toolbar-primary-row {
-  justify-content: center;
-}
-
-.toolbar-secondary-row {
-  justify-content: center;
 }
 
 .browser-toolbar button {
@@ -231,35 +222,13 @@ select:focus-visible {
   gap: 4px;
 }
 
-.address-bar {
-  width: 320px;
-  min-width: 140px;
-  max-width: 320px;
-  flex: 0 1 320px;
-}
-
-.address-bar input {
-  width: 100%;
-  height: 30px;
-  border: 1px solid #2f3743;
-  border-radius: 6px;
-  background: #0f131a;
-  color: #f4f6f8;
-  font-size: 0.84rem;
-  padding: 0 10px;
-  line-height: 30px;
-}
-
-.address-bar input::selection {
-  background: #2f6fb6;
-  color: #ffffff;
-}
-
 .caption-button,
 .caption-clear-button,
 .settings-button,
 .protection-button,
 .transparency-button,
+.theme-button,
+.mouse-through-button,
 .scale-button,
 .profile-button {
   width: 30px;
@@ -338,6 +307,39 @@ select:focus-visible {
 
 .transparency-button.adjusted {
   color: #f3eaff;
+}
+
+.theme-button {
+  color: #d7efff;
+  font-size: 1.25rem !important;
+}
+
+.theme-button:hover,
+.theme-button.active {
+  background: #1b3342;
+  color: #f2fbff;
+}
+
+.mouse-through-button {
+  color: #d9f3dc;
+}
+
+.mouse-through-button:hover,
+.mouse-through-button.active {
+  background: #1b3425;
+  color: #effff0;
+}
+
+.browser-shell.glass {
+  background: rgba(8, 16, 27, 0.64);
+  backdrop-filter: blur(16px) saturate(125%);
+}
+
+.browser-shell.glass .browser-top-layer,
+.browser-shell.glass .browser-toolbar,
+.browser-shell.glass .browser-status-bar {
+  background: rgba(8, 15, 25, 0.76);
+  backdrop-filter: blur(18px);
 }
 
 .scale-button {
@@ -479,14 +481,4 @@ select:focus-visible {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
-}
-
-@media (max-width: 1100px) {
-  .browser-toolbar {
-    gap: 6px;
-  }
-
-  .status-summary {
-    display: none;
-  }
 }

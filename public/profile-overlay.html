@@ -125,7 +125,7 @@
       }
 
       .editor-pane {
-        grid-template-rows: auto auto minmax(0, 1fr);
+        grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr);
         gap: 8px;
       }
 
@@ -400,12 +400,21 @@
             <input id="profile-name" name="name" maxlength="80" autocomplete="off" />
           </div>
           <div class="field prompt-field">
-            <label for="profile-prompt">Prompt</label>
+            <label for="profile-prompt">Prompt (every Mode 1/2 message)</label>
             <textarea
               id="profile-prompt"
               name="prompt"
               maxlength="20000"
               placeholder="Enter the reusable prompt for this profile"
+            ></textarea>
+          </div>
+          <div class="field prompt-field">
+            <label for="profile-instruction">Instruction (new chat shortcut only)</label>
+            <textarea
+              id="profile-instruction"
+              name="instruction"
+              maxlength="20000"
+              placeholder="Send once when opening a new chat with the shortcut"
             ></textarea>
           </div>
         </section>

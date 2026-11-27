@@ -2,6 +2,7 @@ const formElement = document.querySelector('#profile-form');
 const profileListElement = document.querySelector('#profile-list');
 const nameInput = document.querySelector('#profile-name');
 const promptInput = document.querySelector('#profile-prompt');
+const instructionInput = document.querySelector('#profile-instruction');
 const addButton = document.querySelector('#add-button');
 const saveButton = document.querySelector('#save-button');
 const activateButton = document.querySelector('#activate-button');
@@ -38,10 +39,12 @@ function renderEditor() {
   const hasProfile = Boolean(profile);
   nameInput.disabled = !hasProfile;
   promptInput.disabled = !hasProfile;
+  instructionInput.disabled = !hasProfile;
   saveButton.disabled = !hasProfile;
   activateButton.disabled = !hasProfile;
   nameInput.value = profile?.name || '';
   promptInput.value = profile?.prompt || '';
+  instructionInput.value = profile?.instruction || '';
 }
 
 function renderProfileList() {
@@ -177,6 +180,7 @@ async function saveSelectedProfile() {
       id: selectedProfileId,
       name,
       prompt: promptInput.value,
+      instruction: instructionInput.value,
     },
   });
   render();

@@ -19,6 +19,26 @@ const shortcutFields = [
     defaultAccelerator: 'Ctrl+Shift+S',
   },
   {
+    action: 'shortcutSubmitCapture',
+    label: 'Send Capture',
+    defaultAccelerator: 'Shift+Enter',
+  },
+  {
+    action: 'shortcutNewChat',
+    label: 'New Chat + Instruction',
+    defaultAccelerator: 'Ctrl+Shift+N',
+  },
+  {
+    action: 'shortcutRefresh',
+    label: 'Refresh',
+    defaultAccelerator: 'Ctrl+Shift+R',
+  },
+  {
+    action: 'shortcutBackward',
+    label: 'Backward',
+    defaultAccelerator: 'Ctrl+Shift+B',
+  },
+  {
     action: 'shortcutMoveUp',
     label: 'Move Up',
     defaultAccelerator: 'Ctrl+Up',
@@ -42,6 +62,16 @@ const shortcutFields = [
     action: 'shortcutToggleWindow',
     label: 'Hide / Show',
     defaultAccelerator: 'Ctrl+\\',
+  },
+  {
+    action: 'shortcutMouseThrough',
+    label: 'Mouse Through',
+    defaultAccelerator: 'Ctrl+Shift+M',
+  },
+  {
+    action: 'shortcutTypeMessage',
+    label: 'Type Message',
+    defaultAccelerator: 'Ctrl+Shift+T',
   },
 ];
 

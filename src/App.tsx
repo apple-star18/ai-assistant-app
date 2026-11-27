@@ -1,5 +1,4 @@
 import {
-  FormEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   useEffect,
@@ -31,7 +30,6 @@ import {
   listenToSettingsOverlayClosed,
   listenToTransparencyOverlayClosed,
   minimizeMainWindow,
-  navigateBrowser,
   openBrowserHome,
   reloadBrowser,
   resizeBrowser,
@@ -39,6 +37,8 @@ import {
   setBrowserScaleOverlay,
   setBrowserSettingsOverlay,
   setBrowserContentProtected,
+  setBrowserContentTransparency,
+  setBrowserMouseThrough,
   setBrowserTransparencyOverlay,
   startCaptions,
   startMainWindowDragging,
@@ -58,8 +58,11 @@ const initialBrowserState: BrowserState = {
   currentUrl: 'https://chatgpt.com/',
   title: 'ChatGPT',
   isLoading: true,
-  isContentProtected: false,
+  isContentProtected: true,
   windowOpacity: 1,
+  mouseThrough: false,
+  contentTransparency: false,
+  responseTextColor: '#f3f6fb',
   browserScale: 1,
   lastDownload: null,
   lastError: null,
@@ -87,6 +90,7 @@ const initialAutomationState: AutomationState = {
 
 const initialHotkeyState: HotkeyState = {
   isRunning: false,
+  isTyping: false,
   bindings: [],
   lastError: null,
 };
@@ -103,12 +107,12 @@ const TRANSPARENCY_OVERLAY_HEIGHT = 43;
 const SCALE_CONTROL_WIDTH = 220;
 const SCALE_CONTROL_MARGIN = 8;
 const SCALE_OVERLAY_HEIGHT = 43;
-const DEFAULT_CONTROL_TOP = 82;
+const DEFAULT_CONTROL_TOP = 46;
 const SETTINGS_OVERLAY_WIDTH = 332;
-const SETTINGS_OVERLAY_HEIGHT = 500;
+const SETTINGS_OVERLAY_HEIGHT = 692;
 const SETTINGS_OVERLAY_MARGIN = 8;
 const PROFILE_OVERLAY_WIDTH = 620;
-const PROFILE_OVERLAY_HEIGHT = 430;
+const PROFILE_OVERLAY_HEIGHT = 520;
 const PROFILE_OVERLAY_MARGIN = 8;
 const WINDOW_CONTENT_INSET = 6;
 const WINDOW_RESIZE_HANDLES: ReadonlyArray<{
@@ -136,13 +140,11 @@ function BrowserWindow() {
   const profileButtonRef = useRef<HTMLButtonElement | null>(null);
   const transparencyButtonRef = useRef<HTMLButtonElement | null>(null);
   const scaleButtonRef = useRef<HTMLButtonElement | null>(null);
-  const isAddressEditingRef = useRef(false);
   const [browserState, setBrowserState] = useState<BrowserState>(initialBrowserState);
   const [captionState, setCaptionState] = useState<CaptionState>(initialCaptionState);
   const [automationState, setAutomationState] = useState<AutomationState>(initialAutomationState);
   const [hotkeyState, setHotkeyState] = useState<HotkeyState>(initialHotkeyState);
   const [profileState, setProfileState] = useState<ProfileState>(initialProfileState);
-  const [address, setAddress] = useState(initialBrowserState.currentUrl);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -171,9 +173,6 @@ function BrowserWindow() {
 
       if (browserResult.status === 'fulfilled') {
         setBrowserState(browserResult.value);
-        if (!isAddressEditingRef.current) {
-          setAddress(browserResult.value.currentUrl);
-        }
       }
       if (captionResult.status === 'fulfilled') {
         setCaptionState(captionResult.value);
@@ -202,9 +201,6 @@ function BrowserWindow() {
 
     const unlisten = listenToBrowserState((state) => {
       setBrowserState(state);
-      if (!isAddressEditingRef.current) {
-        setAddress(state.currentUrl);
-      }
       setCommandError(null);
     });
 
@@ -214,13 +210,11 @@ function BrowserWindow() {
 
     const unlistenAutomation = listenToAutomationState((state) => {
       setAutomationState(state);
-      if (state.lastError) {
-        setCommandError(state.lastError);
-      }
     });
 
     const unlistenHotkeys = listenToHotkeyState((state) => {
       setHotkeyState(state);
+      setCommandError(null);
     });
     const unlistenProfiles = listenToProfileState((state) => {
       setProfileState(state);
@@ -559,6 +553,13 @@ function BrowserWindow() {
     return 'Ready';
   }, [browserState.isLoading, browserState.lastDownload]);
 
+  const mouseThroughShortcut =
+    hotkeyState.bindings.find((binding) => binding.action === 'shortcutMouseThrough')
+      ?.accelerator ?? 'Ctrl+Shift+M';
+  const typeMessageShortcut =
+    hotkeyState.bindings.find((binding) => binding.action === 'shortcutTypeMessage')?.accelerator ??
+    'Ctrl+Shift+T';
+
   const statusMessage = useMemo(
     () =>
       commandError ??
@@ -566,6 +567,10 @@ function BrowserWindow() {
       automationState.lastError ??
       captionState.lastError ??
       browserState.lastError ??
+      (hotkeyState.isTyping
+        ? `Typing in ChatGPT · Enter to send · Esc to cancel · ${typeMessageShortcut} to stop`
+        : null) ??
+      (browserState.mouseThrough ? `Mouse through ON · ${mouseThroughShortcut}` : null) ??
       (automationState.isRunning
         ? 'Automation running'
         : captionState.pendingCaptionText || captionState.currentCaptionText || statusText),
@@ -573,11 +578,15 @@ function BrowserWindow() {
       automationState.isRunning,
       automationState.lastError,
       browserState.lastError,
+      browserState.mouseThrough,
       captionState.lastError,
       captionState.currentCaptionText,
       captionState.pendingCaptionText,
       commandError,
       hotkeyState.lastError,
+      hotkeyState.isTyping,
+      mouseThroughShortcut,
+      typeMessageShortcut,
       statusText,
     ],
   );
@@ -596,7 +605,6 @@ function BrowserWindow() {
 
       if (nextState) {
         setBrowserState(nextState);
-        setAddress(nextState.currentUrl);
       }
 
       await focusBrowser();
@@ -615,7 +623,7 @@ function BrowserWindow() {
     }
   }
 
-  function handleToolbarMouseDown(event: ReactMouseEvent<HTMLFormElement>) {
+  function handleToolbarMouseDown(event: ReactMouseEvent<HTMLDivElement>) {
     if (event.button !== 0) {
       return;
     }
@@ -627,12 +635,6 @@ function BrowserWindow() {
     }
 
     void runWindowCommand(startMainWindowDragging);
-  }
-
-  function handleNavigate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    isAddressEditingRef.current = false;
-    void runBrowserCommand(() => navigateBrowser(address));
   }
 
   async function toggleCaptions() {
@@ -675,6 +677,29 @@ function BrowserWindow() {
     try {
       const nextState = await setBrowserContentProtected(requestedContentProtected);
       setBrowserState(nextState);
+    } catch (error) {
+      setCommandError(getErrorMessage(error));
+    }
+  }
+
+  async function toggleGlassTheme() {
+    setCommandError(null);
+    try {
+      if (!browserState.contentTransparency) {
+        closeTransparencyControls();
+      }
+      const nextState = await setBrowserContentTransparency(!browserState.contentTransparency);
+      setBrowserState(nextState);
+      await focusBrowser();
+    } catch (error) {
+      setCommandError(getErrorMessage(error));
+    }
+  }
+
+  async function toggleMouseThrough() {
+    setCommandError(null);
+    try {
+      setBrowserState(await setBrowserMouseThrough(!browserState.mouseThrough));
     } catch (error) {
       setCommandError(getErrorMessage(error));
     }
@@ -930,17 +955,13 @@ function BrowserWindow() {
 
   return (
     <main
-      className={browserState.isContentProtected ? 'browser-shell protected' : 'browser-shell'}
+      className={`browser-shell${browserState.isContentProtected ? ' protected' : ''}${browserState.contentTransparency ? ' glass' : ''}`}
       aria-label="ChatGPT browser"
       onPointerDownCapture={handleShellPointerDown}
     >
       <div ref={toolbarRef} className="browser-top-layer">
-        <form
-          className="browser-toolbar"
-          onMouseDown={handleToolbarMouseDown}
-          onSubmit={handleNavigate}
-        >
-          <div className="toolbar-row toolbar-primary-row">
+        <div className="browser-toolbar" onMouseDown={handleToolbarMouseDown}>
+          <div className="toolbar-row">
             <div className="navigation-controls" aria-label="Navigation controls">
               <button
                 type="button"
@@ -965,48 +986,6 @@ function BrowserWindow() {
               </button>
             </div>
 
-            <label className="address-bar">
-              <span className="visually-hidden">URL</span>
-              <input
-                value={address}
-                inputMode="url"
-                spellCheck={false}
-                autoCapitalize="none"
-                onChange={(event) => setAddress(event.target.value)}
-                onFocus={(event) => {
-                  isAddressEditingRef.current = true;
-                  event.currentTarget.select();
-                }}
-                onBlur={() => {
-                  isAddressEditingRef.current = false;
-                  setAddress(browserState.currentUrl);
-                }}
-              />
-            </label>
-
-            <div className="window-controls" aria-label="Window controls">
-              <button
-                className="window-minimize-button"
-                type="button"
-                title="Minimize"
-                aria-label="Minimize window"
-                onClick={() => void runWindowCommand(minimizeMainWindow)}
-              >
-                <span aria-hidden="true">&#8722;</span>
-              </button>
-              <button
-                className="window-close-button"
-                type="button"
-                title="Close"
-                aria-label="Close window"
-                onClick={() => void runWindowCommand(closeMainWindow)}
-              >
-                <span aria-hidden="true">&#215;</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="toolbar-row toolbar-secondary-row">
             <button
               ref={settingsButtonRef}
               className={isSettingsOpen ? 'settings-button active' : 'settings-button'}
@@ -1058,10 +1037,35 @@ function BrowserWindow() {
               }
               type="button"
               title="Transparency"
+              disabled={browserState.contentTransparency}
               aria-expanded={isTransparencyOpen}
               onClick={toggleTransparencyControls}
             >
               <TransparencyIcon />
+            </button>
+
+            <button
+              className={browserState.contentTransparency ? 'theme-button active' : 'theme-button'}
+              type="button"
+              title={browserState.contentTransparency ? 'Glass theme on' : 'Glass theme off'}
+              aria-label="Toggle Glass theme"
+              aria-pressed={browserState.contentTransparency}
+              onClick={() => void toggleGlassTheme()}
+            >
+              ◇
+            </button>
+
+            <button
+              className={
+                browserState.mouseThrough ? 'mouse-through-button active' : 'mouse-through-button'
+              }
+              type="button"
+              title={`Mouse through: ${browserState.mouseThrough ? 'on' : 'off'} (${mouseThroughShortcut})`}
+              aria-label="Toggle mouse through"
+              aria-pressed={browserState.mouseThrough}
+              onClick={() => void toggleMouseThrough()}
+            >
+              <MouseThroughIcon />
             </button>
 
             <button
@@ -1099,8 +1103,28 @@ function BrowserWindow() {
             >
               <ClearCaptionsIcon />
             </button>
+            <div className="window-controls" aria-label="Window controls">
+              <button
+                className="window-minimize-button"
+                type="button"
+                title="Minimize"
+                aria-label="Minimize window"
+                onClick={() => void runWindowCommand(minimizeMainWindow)}
+              >
+                <span aria-hidden="true">&#8722;</span>
+              </button>
+              <button
+                className="window-close-button"
+                type="button"
+                title="Close"
+                aria-label="Close window"
+                onClick={() => void runWindowCommand(closeMainWindow)}
+              >
+                <span aria-hidden="true">&#215;</span>
+              </button>
+            </div>
           </div>
-        </form>
+        </div>
       </div>
       <footer ref={statusBarRef} className="browser-status-bar">
         <div className="status-summary" role="status">
@@ -1226,6 +1250,15 @@ function ProfileIcon() {
     <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
       <circle cx="12" cy="8" r="3.25" />
       <path d="M5.5 19c.7-3.3 3-5 6.5-5s5.8 1.7 6.5 5" />
+    </svg>
+  );
+}
+
+function MouseThroughIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+      <path d="M5 3v15l4-4 3 7 3-1-3-7h6L5 3Z" />
+      <path d="m16 4 3-2M18 8h4" />
     </svg>
   );
 }

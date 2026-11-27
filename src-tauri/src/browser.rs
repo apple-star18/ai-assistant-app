@@ -2,8 +2,11 @@ use std::{
     fs,
     path::PathBuf,
     sync::mpsc,
-    sync::{Mutex, MutexGuard},
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Mutex, MutexGuard,
+    },
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
@@ -18,11 +21,11 @@ use webview2_com::{take_pwstr, FocusChangedEventHandler, SourceChangedEventHandl
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowDisplayAffinity, GetWindowLongPtrW, SetLayeredWindowAttributes,
     SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA, WDA_EXCLUDEFROMCAPTURE,
-    WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED,
+    WDA_NONE, WINDOW_DISPLAY_AFFINITY, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 use windows::{core::PWSTR, Win32::Foundation::COLORREF};
 
-use crate::{automation, captions};
+use crate::{automation, captions, hotkeys, profiles};
 
 const BROWSER_WEBVIEW_LABEL: &str = "chatgpt-browser";
 const TRANSPARENCY_OVERLAY_WEBVIEW_LABEL: &str = "transparency-overlay";
@@ -33,7 +36,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const BROWSER_FOCUSED_EVENT: &str = "browser://focused";
 const BROWSER_SETTINGS_FILE: &str = "browser-settings.json";
 const CHATGPT_HOME_URL: &str = "https://chatgpt.com/";
-const TOOLBAR_HEIGHT: f64 = 82.0;
+const TOOLBAR_HEIGHT: f64 = 46.0;
 const STATUS_BAR_HEIGHT: f64 = 36.0;
 const WINDOW_CONTENT_INSET: f64 = 6.0;
 const MIN_TOOLBAR_HEIGHT: f64 = 40.0;
@@ -47,6 +50,9 @@ const DEFAULT_BROWSER_SCALE: f64 = 1.0;
 const MIN_BROWSER_SCALE: f64 = 0.5;
 const MAX_BROWSER_SCALE: f64 = 2.0;
 const SCRIPT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
+const CHATGPT_SEND_SCRIPT: &str = include_str!("chatgpt-send.js");
+const DEFAULT_RESPONSE_TEXT_COLOR: &str = "#f3f6fb";
+const CONTENT_TRANSPARENCY_STYLE_ID: &str = "smartpass-content-transparency";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +62,9 @@ pub struct BrowserSnapshot {
     is_loading: bool,
     is_content_protected: bool,
     window_opacity: f64,
+    mouse_through: bool,
+    content_transparency: bool,
+    response_text_color: String,
     browser_scale: f64,
     last_download: Option<DownloadSnapshot>,
     last_error: Option<String>,
@@ -67,8 +76,11 @@ impl Default for BrowserSnapshot {
             current_url: CHATGPT_HOME_URL.to_string(),
             title: "ChatGPT".to_string(),
             is_loading: true,
-            is_content_protected: false,
+            is_content_protected: true,
             window_opacity: DEFAULT_WINDOW_OPACITY,
+            mouse_through: false,
+            content_transparency: false,
+            response_text_color: DEFAULT_RESPONSE_TEXT_COLOR.to_string(),
             browser_scale: DEFAULT_BROWSER_SCALE,
             last_download: None,
             last_error: None,
@@ -88,6 +100,19 @@ pub struct DownloadSnapshot {
 pub struct BrowserStore {
     snapshot: Mutex<BrowserSnapshot>,
     layout: Mutex<BrowserLayout>,
+    page_load_started: AtomicU64,
+    page_load_finished: AtomicU64,
+    new_chat_busy: AtomicBool,
+    mouse_through_transition: Mutex<()>,
+    mouse_through_pending: AtomicBool,
+}
+
+struct MouseThroughPendingGuard<'a>(&'a AtomicBool);
+
+impl Drop for MouseThroughPendingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug)]
@@ -136,6 +161,23 @@ pub struct SetWindowOpacityRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetContentTransparencyRequest {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMouseThroughRequest {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetResponseTextColorRequest {
+    color: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetBrowserScaleRequest {
     scale: f64,
 }
@@ -144,6 +186,14 @@ pub struct SetBrowserScaleRequest {
 #[serde(rename_all = "camelCase")]
 struct BrowserPreferences {
     scale: f64,
+    #[serde(default)]
+    content_transparency: bool,
+    #[serde(default = "default_response_text_color")]
+    response_text_color: String,
+}
+
+fn default_response_text_color() -> String {
+    DEFAULT_RESPONSE_TEXT_COLOR.to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,18 +253,28 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let main_window = app
         .get_webview_window(MAIN_WINDOW_LABEL)
         .expect("main window is configured");
-    main_window.set_content_protected(false)?;
-    if let Ok(hwnd) = main_window.hwnd() {
-        let _ = unsafe { SetWindowDisplayAffinity(hwnd, WDA_NONE) };
-    }
+    apply_window_content_protection(&main_window.as_ref().window(), true)
+        .map_err(|error| tauri::Error::Io(std::io::Error::other(error.message)))?;
     let app_handle = app.handle().clone();
     let resize_app_handle = app.handle().clone();
     let profile_dir = browser_profile_dir(app)?;
-    let initial_browser_scale = load_browser_preferences(app.handle())
+    let preferences = load_browser_preferences(app.handle())
         .ok()
         .flatten()
-        .and_then(|preferences| validate_browser_scale(preferences.scale).ok())
-        .unwrap_or(DEFAULT_BROWSER_SCALE);
+        .unwrap_or_else(|| BrowserPreferences {
+            scale: DEFAULT_BROWSER_SCALE,
+            content_transparency: false,
+            response_text_color: default_response_text_color(),
+        });
+    let initial_browser_scale =
+        validate_browser_scale(preferences.scale).unwrap_or(DEFAULT_BROWSER_SCALE);
+    let initial_response_text_color =
+        validate_response_text_color(&preferences.response_text_color)
+            .unwrap_or_else(|_| default_response_text_color());
+    update_snapshot(app.handle(), |snapshot| {
+        snapshot.content_transparency = preferences.content_transparency;
+        snapshot.response_text_color = initial_response_text_color.clone();
+    });
 
     let browser = WebviewBuilder::new(
         BROWSER_WEBVIEW_LABEL,
@@ -222,7 +282,8 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     )
     .data_directory(profile_dir)
     .accept_first_mouse(true)
-    .background_color(Color(33, 33, 33, 255))
+    .transparent(true)
+    .background_color(browser_background_color(preferences.content_transparency))
     .on_navigation(is_allowed_navigation_url)
     .on_new_window(|_, _| NewWindowResponse::Deny)
     .on_document_title_changed({
@@ -244,7 +305,26 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
                 snapshot.is_loading = is_loading;
                 snapshot.last_error = None;
             });
+            if is_loading {
+                app_handle
+                    .state::<BrowserStore>()
+                    .page_load_started
+                    .fetch_add(1, Ordering::AcqRel);
+            }
             if matches!(payload.event(), PageLoadEvent::Finished) {
+                if let Some(browser) = app_handle.get_webview(BROWSER_WEBVIEW_LABEL) {
+                    if let Ok(snapshot) = app_handle.state::<BrowserStore>().snapshot() {
+                        let _ = apply_content_transparency_style(
+                            &browser,
+                            snapshot.content_transparency,
+                            &snapshot.response_text_color,
+                        );
+                    }
+                }
+                app_handle
+                    .state::<BrowserStore>()
+                    .page_load_finished
+                    .fetch_add(1, Ordering::AcqRel);
                 automation::restore_refresh_prompt_after_page_load(&app_handle);
             }
             resize_browser_to_window(&resize_app_handle);
@@ -414,6 +494,7 @@ pub async fn browser_open_home(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
+    reject_navigation_during_new_chat(&app)?;
     // Worker cancellation and composer cleanup can wait for WebView callbacks. Keeping this work
     // off the UI thread lets those callbacks finish immediately and avoids multi-second stalls.
     let home_app = app.clone();
@@ -432,12 +513,116 @@ pub async fn browser_open_home(
     navigate_to(&app, &state, CHATGPT_HOME_URL)
 }
 
+pub fn new_chat_is_busy(app: &AppHandle) -> bool {
+    app.state::<BrowserStore>()
+        .new_chat_busy
+        .load(Ordering::Acquire)
+}
+
+fn reject_navigation_during_new_chat(app: &AppHandle) -> CommandResult<()> {
+    if new_chat_is_busy(app) {
+        Err(BrowserCommandError::automation(
+            "A new chat is opening. Wait for the instruction to finish.".to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn reserve_new_chat(app: &AppHandle) -> Result<(), String> {
+    if app
+        .state::<BrowserStore>()
+        .new_chat_busy
+        .swap(true, Ordering::AcqRel)
+    {
+        Err("A new chat is already opening.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+struct NewChatGuard<'a>(&'a AtomicBool);
+
+impl Drop for NewChatGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+pub fn open_new_chat_with_instruction(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<BrowserStore>();
+    let _guard = NewChatGuard(&state.new_chat_busy);
+    let instruction = profiles::active_instruction(app)?.unwrap_or_default();
+    automation::reset_for_home(app)?;
+    captions::reset_for_home(app)?;
+    let _ = clear_chatgpt_composer(app, Duration::from_secs(3));
+    let previous_start = state.page_load_started.load(Ordering::Acquire);
+    let previous_load = state.page_load_finished.load(Ordering::Acquire);
+    navigate_to(app, &state, CHATGPT_HOME_URL).map_err(|error| error.message)?;
+
+    let started = Instant::now();
+    let mut page_ready = false;
+    while started.elapsed() < Duration::from_secs(20) {
+        let snapshot = state.snapshot().map_err(|error| error.message)?;
+        if state.page_load_started.load(Ordering::Acquire) > previous_start
+            && state.page_load_finished.load(Ordering::Acquire) > previous_load
+            && is_new_chat_home_url(&snapshot.current_url)
+        {
+            page_ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !page_ready {
+        return Err("Timed out waiting for the new ChatGPT page.".to_string());
+    }
+    if instruction.trim().is_empty() {
+        return Ok(());
+    }
+
+    let started = Instant::now();
+    loop {
+        if started.elapsed() >= Duration::from_secs(15) {
+            return Err("Timed out waiting for the new chat composer.".to_string());
+        }
+        let current_url = app
+            .browser_webview()
+            .map_err(|error| error.message)?
+            .url()
+            .map_err(|error| error.to_string())?;
+        if !is_new_chat_home_url(current_url.as_str()) {
+            return Err("The ChatGPT page changed before the instruction was sent.".to_string());
+        }
+        match read_chatgpt_prompt_text(app) {
+            Ok(text) if !text.trim().is_empty() => {
+                return Err(
+                    "The new chat composer already contains text; instruction was not sent."
+                        .to_string(),
+                );
+            }
+            Ok(_) => match copy_text_to_chatgpt_input(app, &instruction) {
+                Ok(()) => break,
+                Err(_) => {}
+            },
+            Err(_) => {}
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    wait_and_submit_chatgpt_input_cancellable(app, Duration::from_secs(15), || false)
+}
+
+fn is_new_chat_home_url(raw_url: &str) -> bool {
+    Url::parse(raw_url)
+        .is_ok_and(|url| is_allowed_chatgpt_automation_url(&url) && url.path() == "/")
+}
+
 #[tauri::command]
 pub fn browser_navigate(
     app: AppHandle,
     state: State<'_, BrowserStore>,
     request: NavigateRequest,
 ) -> CommandResult<BrowserSnapshot> {
+    reject_navigation_during_new_chat(&app)?;
     navigate_to(&app, &state, &request.url)
 }
 
@@ -446,6 +631,7 @@ pub async fn browser_reload(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
+    reject_navigation_during_new_chat(&app)?;
     // Hold the reset guard through the reload call so no new automation can start
     // between cancellation and WebView navigation.
     // Reading the live ChatGPT draft waits for a WebView callback. Run that blocking wait away
@@ -471,13 +657,26 @@ pub async fn browser_reload(
     Ok(state.snapshot()?.clone())
 }
 
+pub fn reload_for_hotkey(app: &AppHandle) -> Result<(), String> {
+    tauri::async_runtime::block_on(browser_reload(app.clone(), app.state::<BrowserStore>()))
+        .map(|_| ())
+        .map_err(|error| error.message)
+}
+
 #[tauri::command]
 pub fn browser_go_back(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
+    reject_navigation_during_new_chat(&app)?;
     run_fixed_browser_script(&app, "history.back();")?;
     Ok(state.snapshot()?.clone())
+}
+
+pub fn go_back_for_hotkey(app: &AppHandle) -> Result<(), String> {
+    browser_go_back(app.clone(), app.state::<BrowserStore>())
+        .map(|_| ())
+        .map_err(|error| error.message)
 }
 
 #[tauri::command]
@@ -485,6 +684,7 @@ pub fn browser_go_forward(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
+    reject_navigation_during_new_chat(&app)?;
     run_fixed_browser_script(&app, "history.forward();")?;
     Ok(state.snapshot()?.clone())
 }
@@ -501,6 +701,7 @@ pub fn browser_clear_session(
     app: AppHandle,
     state: State<'_, BrowserStore>,
 ) -> CommandResult<BrowserSnapshot> {
+    reject_navigation_during_new_chat(&app)?;
     let browser = app.browser_webview()?;
     browser
         .clear_all_browsing_data()
@@ -560,6 +761,11 @@ pub fn browser_set_window_opacity(
     request: SetWindowOpacityRequest,
 ) -> CommandResult<BrowserSnapshot> {
     let opacity = validate_window_opacity(request.opacity)?;
+    if state.snapshot()?.content_transparency && opacity < 1.0 {
+        return Err(BrowserCommandError::validation(
+            "Window transparency is unavailable while Glass theme is enabled.",
+        ));
+    }
     let main_window = match app.get_window(MAIN_WINDOW_LABEL) {
         Some(window) => window,
         None => {
@@ -581,6 +787,217 @@ pub fn browser_set_window_opacity(
 }
 
 #[tauri::command]
+pub async fn browser_set_mouse_through(
+    app: AppHandle,
+    request: SetMouseThroughRequest,
+) -> CommandResult<BrowserSnapshot> {
+    tauri::async_runtime::spawn_blocking(move || change_mouse_through(&app, Some(request.enabled)))
+        .await
+        .map_err(|error| BrowserCommandError {
+            code: "mouse_through_failed",
+            message: format!("Mouse through worker failed: {error}"),
+        })?
+}
+
+pub(crate) fn toggle_mouse_through(app: &AppHandle) -> Result<(), String> {
+    change_mouse_through(app, None)
+        .map(|_| ())
+        .map_err(|error| error.message)
+}
+
+fn change_mouse_through(
+    app: &AppHandle,
+    requested: Option<bool>,
+) -> CommandResult<BrowserSnapshot> {
+    let state = app.state::<BrowserStore>();
+    let _transition = state
+        .mouse_through_transition
+        .lock()
+        .map_err(|_| BrowserCommandError {
+            code: "state_unavailable",
+            message: "Mouse through state is unavailable.".to_string(),
+        })?;
+    let current = state.snapshot()?.clone();
+    let enabled = requested.unwrap_or(!current.mouse_through);
+    if enabled == current.mouse_through {
+        return Ok(current);
+    }
+    if enabled && !hotkeys::mouse_through_recovery_available(app) {
+        return Err(BrowserCommandError {
+            code: "hotkey_unavailable",
+            message: "Mouse through requires its global shortcut to be available for recovery."
+                .to_string(),
+        });
+    }
+    let _pending = if enabled {
+        state.mouse_through_pending.store(true, Ordering::Release);
+        Some(MouseThroughPendingGuard(&state.mouse_through_pending))
+    } else {
+        None
+    };
+
+    let window = app
+        .get_window(MAIN_WINDOW_LABEL)
+        .ok_or_else(|| BrowserCommandError {
+            code: "window_unavailable",
+            message: "Main window is not available.".to_string(),
+        })?;
+    if enabled {
+        close_mouse_through_overlays(app, &state)?;
+    }
+
+    window
+        .set_ignore_cursor_events(enabled)
+        .map_err(BrowserCommandError::from_tauri)?;
+    let (result_sender, result_receiver) = mpsc::channel();
+    let callback_window = window.clone();
+    let opacity = current.window_opacity;
+    let queued = window.run_on_main_thread(move || {
+        let result = (|| {
+            let hwnd = callback_window
+                .hwnd()
+                .map_err(BrowserCommandError::from_tauri)?;
+            let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+            if (style & WS_EX_TRANSPARENT.0 as isize != 0) != enabled {
+                return Err(BrowserCommandError {
+                    code: "mouse_through_failed",
+                    message: "Mouse through window style was not applied.".to_string(),
+                });
+            }
+            apply_window_opacity(&callback_window, opacity)
+        })();
+        let _ = result_sender.send(result);
+    });
+    let result = queued
+        .map_err(BrowserCommandError::from_tauri)
+        .and_then(|_| {
+            result_receiver
+                .recv_timeout(Duration::from_secs(3))
+                .map_err(|_| BrowserCommandError {
+                    code: "mouse_through_failed",
+                    message: "Timed out applying mouse through to the window.".to_string(),
+                })?
+        });
+    if let Err(error) = result {
+        let _ = window.set_ignore_cursor_events(current.mouse_through);
+        let callback_window = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            let _ = apply_window_opacity(&callback_window, opacity);
+        });
+        return Err(error);
+    }
+
+    if enabled {
+        close_mouse_through_overlays(app, &state)?;
+    }
+    update_snapshot(app, |snapshot| {
+        snapshot.mouse_through = enabled;
+        snapshot.last_error = None;
+    });
+    let snapshot = state.snapshot()?.clone();
+    Ok(snapshot)
+}
+
+fn close_mouse_through_overlays(
+    app: &AppHandle,
+    state: &State<'_, BrowserStore>,
+) -> CommandResult<()> {
+    for (label, event) in [
+        (
+            TRANSPARENCY_OVERLAY_WEBVIEW_LABEL,
+            "transparency-overlay://closed",
+        ),
+        (SCALE_OVERLAY_WEBVIEW_LABEL, "scale-overlay://closed"),
+        (SETTINGS_OVERLAY_WEBVIEW_LABEL, "settings-overlay://closed"),
+        (PROFILE_OVERLAY_WEBVIEW_LABEL, "profile-overlay://closed"),
+    ] {
+        if let Some(overlay) = app.get_webview(label) {
+            overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+            let _ = app.emit(event, ());
+        }
+    }
+    let mut layout = state.layout()?;
+    layout.settings_overlay_open = false;
+    layout.profile_overlay_open = false;
+    Ok(())
+}
+
+fn mouse_through_blocks_overlay(state: &State<'_, BrowserStore>) -> CommandResult<bool> {
+    Ok(state.mouse_through_pending.load(Ordering::Acquire) || state.snapshot()?.mouse_through)
+}
+
+#[tauri::command]
+pub fn browser_set_content_transparency(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: SetContentTransparencyRequest,
+) -> CommandResult<BrowserSnapshot> {
+    let browser = app.browser_webview()?;
+    let current = state.snapshot()?.clone();
+    if request.enabled && current.window_opacity < 1.0 {
+        let window = app
+            .get_window(MAIN_WINDOW_LABEL)
+            .ok_or_else(|| BrowserCommandError {
+                code: "window_unavailable",
+                message: "Main window is not available.".to_string(),
+            })?;
+        apply_window_opacity(&window, 1.0)?;
+    }
+    browser
+        .set_background_color(Some(browser_background_color(request.enabled)))
+        .map_err(BrowserCommandError::from_tauri)?;
+    if let Err(error) =
+        apply_content_transparency_style(&browser, request.enabled, &current.response_text_color)
+    {
+        let _ = browser
+            .set_background_color(Some(browser_background_color(current.content_transparency)));
+        return Err(error);
+    }
+
+    let preferences = BrowserPreferences {
+        scale: current.browser_scale,
+        content_transparency: request.enabled,
+        response_text_color: current.response_text_color,
+    };
+    save_browser_preferences(&app, &preferences).map_err(BrowserCommandError::storage)?;
+    update_snapshot(&app, |snapshot| {
+        snapshot.content_transparency = request.enabled;
+        if request.enabled {
+            snapshot.window_opacity = 1.0;
+        }
+        snapshot.last_error = None;
+    });
+    Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
+pub fn browser_set_response_text_color(
+    app: AppHandle,
+    state: State<'_, BrowserStore>,
+    request: SetResponseTextColorRequest,
+) -> CommandResult<BrowserSnapshot> {
+    let color = validate_response_text_color(&request.color)?;
+    let current = state.snapshot()?.clone();
+    if current.content_transparency {
+        apply_content_transparency_style(&app.browser_webview()?, true, &color)?;
+    }
+    save_browser_preferences(
+        &app,
+        &BrowserPreferences {
+            scale: current.browser_scale,
+            content_transparency: current.content_transparency,
+            response_text_color: color.clone(),
+        },
+    )
+    .map_err(BrowserCommandError::storage)?;
+    update_snapshot(&app, |snapshot| {
+        snapshot.response_text_color = color;
+        snapshot.last_error = None;
+    });
+    Ok(state.snapshot()?.clone())
+}
+
+#[tauri::command]
 pub fn browser_set_scale(
     app: AppHandle,
     state: State<'_, BrowserStore>,
@@ -594,8 +1011,16 @@ pub fn browser_set_scale(
             message: "Browser WebView is not available.".to_string(),
         })?;
 
-    save_browser_preferences(&app, &BrowserPreferences { scale })
-        .map_err(BrowserCommandError::storage)?;
+    let current = state.snapshot()?.clone();
+    save_browser_preferences(
+        &app,
+        &BrowserPreferences {
+            scale,
+            content_transparency: current.content_transparency,
+            response_text_color: current.response_text_color,
+        },
+    )
+    .map_err(BrowserCommandError::storage)?;
     browser
         .set_zoom(scale)
         .map_err(BrowserCommandError::from_tauri)?;
@@ -611,6 +1036,7 @@ pub fn browser_set_scale(
 #[tauri::command]
 pub fn browser_set_transparency_overlay(
     app: AppHandle,
+    state: State<'_, BrowserStore>,
     request: SetTransparencyOverlayRequest,
 ) -> CommandResult<()> {
     let overlay = app
@@ -622,6 +1048,10 @@ pub fn browser_set_transparency_overlay(
 
     if !request.is_open {
         overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        let _ = app.emit("transparency-overlay://closed", ());
+        return Ok(());
+    }
+    if mouse_through_blocks_overlay(&state)? {
         let _ = app.emit("transparency-overlay://closed", ());
         return Ok(());
     }
@@ -643,6 +1073,10 @@ pub fn browser_set_transparency_overlay(
     overlay
         .set_bounds(Rect { position, size })
         .map_err(BrowserCommandError::from_tauri)?;
+    if mouse_through_blocks_overlay(&state)? {
+        let _ = app.emit("transparency-overlay://closed", ());
+        return Ok(());
+    }
     overlay.show().map_err(BrowserCommandError::from_tauri)?;
     overlay
         .eval(format!(
@@ -659,6 +1093,7 @@ pub fn browser_set_transparency_overlay(
 #[tauri::command]
 pub fn browser_set_scale_overlay(
     app: AppHandle,
+    state: State<'_, BrowserStore>,
     request: SetScaleOverlayRequest,
 ) -> CommandResult<()> {
     let overlay = app
@@ -670,6 +1105,10 @@ pub fn browser_set_scale_overlay(
 
     if !request.is_open {
         overlay.hide().map_err(BrowserCommandError::from_tauri)?;
+        let _ = app.emit("scale-overlay://closed", ());
+        return Ok(());
+    }
+    if mouse_through_blocks_overlay(&state)? {
         let _ = app.emit("scale-overlay://closed", ());
         return Ok(());
     }
@@ -697,6 +1136,10 @@ pub fn browser_set_scale_overlay(
     overlay
         .set_bounds(Rect { position, size })
         .map_err(BrowserCommandError::from_tauri)?;
+    if mouse_through_blocks_overlay(&state)? {
+        let _ = app.emit("scale-overlay://closed", ());
+        return Ok(());
+    }
     overlay.show().map_err(BrowserCommandError::from_tauri)?;
     overlay
         .eval(format!(
@@ -726,6 +1169,10 @@ pub fn browser_set_settings_overlay(
     if !request.is_open {
         overlay.hide().map_err(BrowserCommandError::from_tauri)?;
         state.layout()?.settings_overlay_open = false;
+        let _ = app.emit("settings-overlay://closed", ());
+        return Ok(());
+    }
+    if mouse_through_blocks_overlay(&state)? {
         let _ = app.emit("settings-overlay://closed", ());
         return Ok(());
     }
@@ -764,6 +1211,10 @@ pub fn browser_set_settings_overlay(
     overlay
         .set_bounds(Rect { position, size })
         .map_err(BrowserCommandError::from_tauri)?;
+    if mouse_through_blocks_overlay(&state)? {
+        let _ = app.emit("settings-overlay://closed", ());
+        return Ok(());
+    }
     overlay.show().map_err(BrowserCommandError::from_tauri)?;
     let refresh_script = if should_refresh {
         " window.refreshSettings && window.refreshSettings();"
@@ -802,6 +1253,10 @@ pub fn browser_set_profile_overlay(
         let _ = app.emit("profile-overlay://closed", ());
         return Ok(());
     }
+    if mouse_through_blocks_overlay(&state)? {
+        let _ = app.emit("profile-overlay://closed", ());
+        return Ok(());
+    }
 
     validate_overlay_rect(
         request.left,
@@ -836,6 +1291,10 @@ pub fn browser_set_profile_overlay(
     overlay
         .set_bounds(Rect { position, size })
         .map_err(BrowserCommandError::from_tauri)?;
+    if mouse_through_blocks_overlay(&state)? {
+        let _ = app.emit("profile-overlay://closed", ());
+        return Ok(());
+    }
     overlay.show().map_err(BrowserCommandError::from_tauri)?;
     let refresh_script = if should_refresh {
         " window.refreshProfiles && window.refreshProfiles();"
@@ -901,6 +1360,87 @@ fn apply_window_opacity(window: &Window, opacity: f64) -> CommandResult<()> {
             message: format!("Failed to update window transparency: {error}"),
         }
     })
+}
+
+fn browser_background_color(enabled: bool) -> Color {
+    if enabled {
+        Color(0, 0, 0, 0)
+    } else {
+        Color(33, 33, 33, 255)
+    }
+}
+
+fn validate_response_text_color(color: &str) -> CommandResult<String> {
+    let is_hex_color = color.len() == 7
+        && color.starts_with('#')
+        && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit);
+    if !is_hex_color {
+        return Err(BrowserCommandError::validation(
+            "Response text color must be a six-digit hex color.",
+        ));
+    }
+    Ok(color.to_ascii_lowercase())
+}
+
+fn apply_content_transparency_style(
+    browser: &tauri::Webview,
+    enabled: bool,
+    text_color: &str,
+) -> CommandResult<()> {
+    let style_id = serde_json::to_string(CONTENT_TRANSPARENCY_STYLE_ID)
+        .map_err(|error| BrowserCommandError::storage(error.to_string()))?;
+    let script = if enabled {
+        let css = format!(
+            r#"
+html, body, #__next, #root, main, aside, nav,
+[class*="sidebar-navigation"], [class*="bg-surface"],
+[class*="bg-surface"]::before, [class*="ComposerLayoutRoot"] {{
+  background: transparent !important;
+}}
+:root {{
+  color-scheme: dark !important;
+  --token-bg-primary: transparent !important;
+  --token-bg-secondary: transparent !important;
+  --token-bg-tertiary: transparent !important;
+  --token-bg-elevated: transparent !important;
+  --token-text-primary: {text_color} !important;
+  --token-text-secondary: #d5dce6 !important;
+  --token-text-tertiary: #b4bfcd !important;
+}}
+body {{ color: {text_color} !important; }}
+body *:not(code):not(pre):not(a):not([class*="Code"] *) {{ color: {text_color} !important; }}
+::placeholder, [class*="placeholder"], [class*="Placeholder"] {{
+  color: #c0c9d7 !important;
+}}
+[contenteditable], input, textarea {{ caret-color: {text_color} !important; }}
+[class*="bg-user-message"], [class*="composer-layout-surface"],
+[class*="ComposerSurface"], [class*="ComposerLayoutBody"] {{
+  background-color: rgba(24, 34, 48, 0.48) !important;
+}}
+"#
+        );
+        let css = serde_json::to_string(&css)
+            .map_err(|error| BrowserCommandError::storage(error.to_string()))?;
+        format!(
+            r#"(() => {{
+  if (location.protocol !== 'https:' || !(location.hostname === 'chatgpt.com' || location.hostname.endsWith('.chatgpt.com') || location.hostname === 'chat.openai.com')) return;
+  let style = document.getElementById({style_id});
+  if (!style) {{
+    style = document.createElement('style');
+    style.id = {style_id};
+    (document.head || document.documentElement).appendChild(style);
+  }}
+  style.textContent = {css};
+}})();"#
+        )
+    } else {
+        format!(
+            "(() => {{ const style = document.getElementById({style_id}); if (style) style.remove(); }})();"
+        )
+    };
+    browser
+        .eval(script)
+        .map_err(BrowserCommandError::from_tauri)
 }
 
 fn read_window_content_protection(window: &Window) -> CommandResult<bool> {
@@ -1386,12 +1926,52 @@ pub fn copy_text_to_chatgpt_input(app: &AppHandle, text: &str) -> Result<(), Str
     insert_text_to_chatgpt_input(app, text)
 }
 
+pub fn replace_chatgpt_prompt_without_focus(app: &AppHandle, text: &str) -> Result<(), String> {
+    let encoded = serde_json::to_string(text)
+        .map_err(|error| format!("Failed to encode typed text: {error}"))?;
+    let script = format!(
+        r#"
+(() => {{
+  const input = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"], #prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+  if (!input) return {{ ok: false, reason: 'input_not_found' }};
+  const text = {encoded};
+  if (input instanceof HTMLTextAreaElement) {{
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(input, text);
+  }} else if (input.isContentEditable) {{
+    input.textContent = text;
+  }} else {{
+    return {{ ok: false, reason: 'input_not_editable' }};
+  }}
+  input.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: text }}));
+  return {{ ok: true }};
+}})()
+"#
+    );
+    let result = eval_json(app, script)?;
+    if result.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(())
+    } else {
+        Err(format!(
+            "ChatGPT prompt is not available: {}",
+            result
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ))
+    }
+}
+
 pub fn read_chatgpt_prompt_text(app: &AppHandle) -> Result<String, String> {
+    read_chatgpt_prompt_text_untrimmed(app).map(|text| text.trim().to_string())
+}
+
+pub fn read_chatgpt_prompt_text_untrimmed(app: &AppHandle) -> Result<String, String> {
     let result = eval_json(
         app,
         r#"
 (() => {
-  const input = document.querySelector('#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+  const input = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"], #prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
 
   if (!input) {
     return { ok: false, reason: 'input_not_found' };
@@ -1408,7 +1988,6 @@ pub fn read_chatgpt_prompt_text(app: &AppHandle) -> Result<String, String> {
             .get("text")
             .and_then(Value::as_str)
             .unwrap_or_default()
-            .trim()
             .to_string())
     } else {
         Err(format!(
@@ -1605,7 +2184,7 @@ pub fn wait_for_chatgpt_upload_cancellable(
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let has_attachment = state
-            .get("hasAttachment")
+            .get("hasReadyAttachment")
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
@@ -1613,10 +2192,65 @@ pub fn wait_for_chatgpt_upload_cancellable(
             return Ok(());
         }
 
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(100));
     }
 
     Err("Timed out waiting for ChatGPT upload to finish.".to_string())
+}
+
+pub fn wait_for_chatgpt_file_upload_cancellable(
+    app: &AppHandle,
+    file_name: &str,
+    timeout: Duration,
+    is_cancelled: impl Fn() -> bool,
+) -> Result<(), String> {
+    let started_at = std::time::Instant::now();
+    while started_at.elapsed() < timeout {
+        if is_cancelled() {
+            return Err(automation::cancelled_error());
+        }
+        let state = chatgpt_file_upload_state(app, file_name)?;
+        if state.get("ready").and_then(Value::as_bool) == Some(true) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!(
+        "Timed out waiting for ChatGPT to finish uploading {file_name}."
+    ))
+}
+
+fn chatgpt_file_upload_state(app: &AppHandle, file_name: &str) -> Result<Value, String> {
+    let encoded_name = serde_json::to_string(file_name)
+        .map_err(|error| format!("Failed to encode screenshot file name: {error}"))?;
+    eval_json(
+        app,
+        format!(
+            r#"
+(() => {{
+  const fileName = {encoded_name};
+  const prompt = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"], #prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+  if (!prompt) return {{ ready: false }};
+  const composer = prompt.closest('form') || document;
+  const surface = Array.from(composer.querySelectorAll('[role="button"][aria-label]'))
+    .find((element) => element.getAttribute('aria-label') === fileName);
+  const uploading = Array.from(composer.querySelectorAll('[role="progressbar"], [aria-busy="true"], progress'))
+    .some((element) => (element.getAttribute('aria-label') || '').includes(fileName) || surface?.contains(element));
+  const imageReady = surface && Array.from(surface.querySelectorAll('img'))
+    .some((image) => image.getAttribute('alt') === fileName);
+  return {{ ready: Boolean(imageReady && !uploading) }};
+}})();
+"#
+        ),
+    )
+}
+
+pub fn chatgpt_has_attachments(app: &AppHandle) -> Result<bool, String> {
+    let state = chatgpt_upload_state(app)?;
+    Ok(state
+        .get("hasAttachment")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
 }
 
 pub fn discard_chatgpt_attachments(app: &AppHandle, timeout: Duration) -> Result<(), String> {
@@ -1627,7 +2261,7 @@ pub fn discard_chatgpt_attachments(app: &AppHandle, timeout: Duration) -> Result
             app,
             r#"
 (() => {
-  const prompt = document.querySelector('#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+  const prompt = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"], #prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
   const composer = prompt?.closest('form') || document;
   const attachmentSelectors = [
     '[data-testid="composer-file-preview"]',
@@ -1637,12 +2271,15 @@ pub fn discard_chatgpt_attachments(app: &AppHandle, timeout: Duration) -> Result
     'button[aria-label*="remove file" i]',
     'button[aria-label*="remove attachment" i]',
     'button[aria-label*="remove image" i]',
+    'button[aria-label^="Remove "]',
+    '[role="button"].composer-attachment-surface',
     'img[src^="blob:"]'
   ];
   const removeSelectors = [
     'button[aria-label*="remove file" i]',
     'button[aria-label*="remove attachment" i]',
     'button[aria-label*="remove image" i]',
+    'button[aria-label^="Remove "]',
     'button[data-testid*="remove"][data-testid*="attachment"]',
     'button[data-testid*="remove"][data-testid*="file"]',
     'button[data-testid*="remove"][data-testid*="image"]'
@@ -1679,7 +2316,7 @@ pub fn clear_chatgpt_composer(app: &AppHandle, timeout: Duration) -> Result<(), 
             app,
             r#"
 (() => {
-  const prompt = document.querySelector('#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+  const prompt = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"], #prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
 
   if (!prompt) {
     return { ok: false, reason: 'input_not_found' };
@@ -1690,6 +2327,7 @@ pub fn clear_chatgpt_composer(app: &AppHandle, timeout: Duration) -> Result<(), 
     'button[aria-label*="remove file" i]',
     'button[aria-label*="remove attachment" i]',
     'button[aria-label*="remove image" i]',
+    'button[aria-label^="Remove "]',
     'button[data-testid*="remove"][data-testid*="attachment"]',
     'button[data-testid*="remove"][data-testid*="file"]',
     'button[data-testid*="remove"][data-testid*="image"]'
@@ -1699,6 +2337,7 @@ pub fn clear_chatgpt_composer(app: &AppHandle, timeout: Duration) -> Result<(), 
     '[data-testid*="attachment"]',
     '[data-testid*="file-preview"]',
     '[data-testid*="image-preview"]',
+    '[role="button"].composer-attachment-surface',
     'img[src^="blob:"]'
   ];
   const removeButtons = [...new Set(removeSelectors.flatMap((selector) => Array.from(composer.querySelectorAll(selector))))];
@@ -1764,51 +2403,15 @@ pub fn clear_chatgpt_composer(app: &AppHandle, timeout: Duration) -> Result<(), 
 
 pub fn submit_chatgpt_when_upload_ready(app: &AppHandle) -> Result<(), String> {
     wait_for_chatgpt_upload(app, Duration::from_secs(45))?;
-    submit_chatgpt_input(app)
-}
-
-pub fn submit_chatgpt_input(app: &AppHandle) -> Result<(), String> {
-    let script = r#"
-(() => {
-  const selectors = [
-    'button[data-testid="send-button"]',
-    'button[aria-label="Send prompt"]',
-    'button[aria-label="Send message"]',
-    'form button[type="submit"]'
-  ];
-  const button = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
-
-  if (button && !button.disabled && button.getAttribute('aria-disabled') !== 'true') {
-    button.click();
-    return { ok: true, method: 'button' };
-  }
-
-  const input = document.querySelector('#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"], div[contenteditable="true"], textarea');
-
-  if (!input) {
-    return { ok: false, reason: 'input_not_found' };
-  }
-
-  input.focus();
-  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-  input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-
-  return { ok: true, method: 'keyboard' };
-})();
-"#;
-    let result = eval_json(app, script)?;
-
-    if result.get("ok").and_then(Value::as_bool) == Some(true) {
-        Ok(())
-    } else {
-        Err(format!(
-            "ChatGPT submit control was not available: {}",
-            result
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-        ))
+    wait_and_submit_chatgpt_input_cancellable(app, Duration::from_secs(120), || false)?;
+    let started_at = std::time::Instant::now();
+    while started_at.elapsed() < Duration::from_secs(15) {
+        if !chatgpt_has_attachments(app)? {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
+    Err("ChatGPT did not clear the sent screenshots from the composer.".to_string())
 }
 
 fn chatgpt_upload_state(app: &AppHandle) -> Result<Value, String> {
@@ -1816,7 +2419,7 @@ fn chatgpt_upload_state(app: &AppHandle) -> Result<Value, String> {
         app,
         r#"
 (() => {
-  const prompt = document.querySelector('#prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
+  const prompt = document.querySelector('[contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"], #prompt-textarea, textarea[data-testid="prompt-textarea"], div[contenteditable="true"][data-testid="prompt-textarea"]');
   const composer = prompt?.closest('form') || document;
   const text = composer.innerText.toLowerCase();
   const busy = Array.from(composer.querySelectorAll('[aria-busy="true"], [role="progressbar"], progress')).length > 0;
@@ -1829,13 +2432,19 @@ fn chatgpt_upload_state(app: &AppHandle) -> Result<Value, String> {
     'button[aria-label*="remove file" i]',
     'button[aria-label*="remove attachment" i]',
     'button[aria-label*="remove image" i]',
+    'button[aria-label^="Remove "]',
+    '[role="button"].composer-attachment-surface',
     'img[src^="blob:"]'
   ];
   const hasAttachment = attachmentSelectors.some((selector) => composer.querySelector(selector));
+  const hasReadyAttachment = Boolean(
+    composer.querySelector('[role="button"].composer-attachment-surface img[alt], img[src^="blob:"], [data-testid="composer-file-preview"]')
+  );
 
   return {
     isUploading: Boolean(busy || textSuggestsUploading),
-    hasAttachment: Boolean(hasAttachment)
+    hasAttachment: Boolean(hasAttachment),
+    hasReadyAttachment
   };
 })();
 "#,
@@ -1856,6 +2465,7 @@ fn insert_text_to_chatgpt_input(app: &AppHandle, text: &str) -> Result<(), Strin
 (() => {{
   const text = {encoded_text};
   const selectors = [
+    '[contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"]',
     '#prompt-textarea',
     'textarea[data-testid="prompt-textarea"]',
     'div[contenteditable="true"][data-testid="prompt-textarea"]',
@@ -1929,31 +2539,7 @@ pub fn wait_and_submit_chatgpt_input_cancellable(
         if is_cancelled() {
             return Err(automation::cancelled_error());
         }
-        let result = eval_json(
-            app,
-            r#"
-(() => {
-  const selectors = [
-    'button[data-testid="send-button"]',
-    'button[aria-label="Send prompt"]',
-    'button[aria-label="Send message"]',
-    'form button[type="submit"]'
-  ];
-  const button = selectors.map((selector) => document.querySelector(selector)).find(Boolean);
-
-  if (!button) {
-    return { submitted: false, reason: 'send_button_not_found' };
-  }
-
-  if (button.disabled || button.getAttribute('aria-disabled') === 'true') {
-    return { submitted: false, reason: 'send_button_disabled' };
-  }
-
-  button.click();
-  return { submitted: true };
-})();
-"#,
-        )?;
+        let result = eval_json(app, CHATGPT_SEND_SCRIPT)?;
 
         if result.get("submitted").and_then(Value::as_bool) == Some(true) {
             return Ok(());
@@ -1968,7 +2554,8 @@ pub fn wait_and_submit_chatgpt_input_cancellable(
     }
 
     Err(format!(
-        "Timed out waiting for the ChatGPT send button to become enabled: {last_reason}"
+        "ChatGPT did not become ready to send within {} seconds: {last_reason}",
+        timeout.as_secs()
     ))
 }
 
@@ -2033,8 +2620,19 @@ fn eval_json(app: &AppHandle, script: impl Into<String>) -> Result<Value, String
 mod tests {
     use super::{
         is_allowed_chatgpt_automation_url, is_allowed_navigation_url, validate_browser_scale,
+        BrowserSnapshot,
     };
     use tauri::Url;
+
+    #[test]
+    fn mouse_through_is_off_on_startup() {
+        assert!(!BrowserSnapshot::default().mouse_through);
+    }
+
+    #[test]
+    fn content_protection_is_on_on_startup() {
+        assert!(BrowserSnapshot::default().is_content_protected);
+    }
 
     #[test]
     fn navigation_allows_https_and_local_development_only() {

@@ -16,8 +16,8 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const AUTOMATION_EVENT: &str = "automation://state";
 const CAPTION_INPUT_ATTEMPTS: usize = 3;
 const CAPTION_RETRY_DELAY: Duration = Duration::from_millis(250);
-const CHATGPT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(10);
-const CHATGPT_SUBMIT_TIMEOUT: Duration = Duration::from_secs(30);
+const CHATGPT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const CHATGPT_SUBMIT_TIMEOUT: Duration = Duration::from_secs(120);
 const ATTACHMENT_DISCARD_TIMEOUT: Duration = Duration::from_secs(3);
 const MODE_3_COORDINATOR_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const AUTOMATION_CANCELLED: &str = "Automation was cancelled by browser navigation.";
@@ -94,6 +94,7 @@ struct CancellationToken {
 #[derive(Debug, Default)]
 struct Mode3Coordinator {
     state: Mutex<Mode3CoordinatorState>,
+    injection_gate: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -102,6 +103,7 @@ struct Mode3CoordinatorState {
     generation: u64,
     finalizing: bool,
     successful_injections: usize,
+    pending_review: bool,
     upload_errors: Vec<String>,
 }
 
@@ -130,6 +132,17 @@ pub fn cancelled_error() -> String {
 
 pub fn is_cancelled_error(message: &str) -> bool {
     message == AUTOMATION_CANCELLED
+}
+
+pub(crate) fn clear_last_error(app: &AppHandle) {
+    if app
+        .state::<AutomationStore>()
+        .snapshot
+        .lock()
+        .is_ok_and(|snapshot| snapshot.last_error.is_some())
+    {
+        update_snapshot(app, |snapshot| snapshot.last_error = None);
+    }
 }
 
 #[tauri::command]
@@ -298,6 +311,7 @@ fn run_mode_2_prompt_workflow(
         let screenshot = screenshot::capture_primary_display_png()?;
         ensure_not_cancelled(token)?;
         browser::upload_screenshot_to_chatgpt_input(app, &screenshot.file_name, &screenshot.bytes)?;
+        let file_name = screenshot.file_name.clone();
         drop(screenshot);
         upload_was_injected = true;
         update_snapshot(app, |snapshot| {
@@ -306,9 +320,12 @@ fn run_mode_2_prompt_workflow(
 
         ensure_not_cancelled(token)?;
         let _ = browser::copy_text_to_chatgpt_input(app, prompt_text);
-        browser::wait_for_chatgpt_upload_cancellable(app, CHATGPT_UPLOAD_TIMEOUT, || {
-            token.is_cancelled()
-        })?;
+        browser::wait_for_chatgpt_file_upload_cancellable(
+            app,
+            &file_name,
+            CHATGPT_UPLOAD_TIMEOUT,
+            || token.is_cancelled(),
+        )?;
         update_snapshot(app, |snapshot| {
             snapshot.upload_state = UploadState::Ready;
         });
@@ -638,6 +655,7 @@ fn reset_automation_runtime(app: &AppHandle) -> Result<(), String> {
             .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
         state.active_jobs = 0;
         reset_mode_3_state(&mut state);
+        state.pending_review = false;
     }
     update_snapshot(app, |snapshot| *snapshot = AutomationSnapshot::default());
     Ok(())
@@ -691,13 +709,25 @@ pub(crate) fn try_reserve_caption_workflow(
         );
     }
 
-    let permit = try_reserve_caption_workflow_flag(
+    let (pending_review, observed_generation) = {
+        let mode_3 = state
+            .mode_3_coordinator
+            .state
+            .lock()
+            .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+        if mode_3.active_jobs != 0 || mode_3.finalizing {
+            return Err("Mode 3 is adding screenshots. Wait for it to finish before using Mode 1 or Mode 2.".to_string());
+        }
+        (mode_3.pending_review, mode_3.generation)
+    };
+    let pending_attachments_cleared = pending_review && !browser::chatgpt_has_attachments(app)?;
+    let permit = reserve_caption_while_mode_3_idle(
+        &state.mode_3_coordinator,
         &state.caption_workflow_reserved,
         &state.cancellation_epoch,
-    )
-    .ok_or_else(|| {
-        "Mode 1 or Mode 2 automation is already running. The new request was ignored.".to_string()
-    })?;
+        pending_attachments_cleared,
+        observed_generation,
+    )?;
     if state.resetting.load(Ordering::Acquire) || permit.token.is_cancelled() {
         drop(permit);
         Err(
@@ -707,6 +737,34 @@ pub(crate) fn try_reserve_caption_workflow(
     } else {
         Ok(permit)
     }
+}
+
+fn reserve_caption_while_mode_3_idle(
+    coordinator: &Mode3Coordinator,
+    reserved: &Arc<AtomicBool>,
+    cancellation_epoch: &Arc<AtomicU64>,
+    pending_attachments_cleared: bool,
+    observed_generation: u64,
+) -> Result<CaptionWorkflowPermit, String> {
+    let mut mode_3 = coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+    if mode_3.active_jobs != 0 || mode_3.finalizing {
+        return Err(
+            "Mode 3 is adding screenshots. Wait for it to finish before using Mode 1 or Mode 2."
+                .to_string(),
+        );
+    }
+    if mode_3.pending_review {
+        if !pending_attachments_cleared || mode_3.generation != observed_generation {
+            return Err("Mode 3 screenshots are still in the ChatGPT composer. Submit or remove them before using Mode 1 or Mode 2.".to_string());
+        }
+        mode_3.pending_review = false;
+    }
+    try_reserve_caption_workflow_flag(reserved, cancellation_epoch).ok_or_else(|| {
+        "Mode 1 or Mode 2 automation is already running. The new request was ignored.".to_string()
+    })
 }
 
 fn try_reserve_caption_workflow_flag(
@@ -755,8 +813,7 @@ pub(crate) fn start_mode_3_job(app: &AppHandle) -> Result<Mode3JobPermit, String
         );
     }
 
-    state.active_jobs += 1;
-    state.generation = state.generation.wrapping_add(1);
+    reserve_mode_3_while_caption_idle(&mut state, &automation.caption_workflow_reserved)?;
     drop(state);
 
     update_snapshot(app, |snapshot| {
@@ -769,13 +826,57 @@ pub(crate) fn start_mode_3_job(app: &AppHandle) -> Result<Mode3JobPermit, String
     Ok(Mode3JobPermit { coordinator, token })
 }
 
+fn reserve_mode_3_while_caption_idle(
+    state: &mut Mode3CoordinatorState,
+    caption_reserved: &AtomicBool,
+) -> Result<(), String> {
+    if caption_reserved.load(Ordering::Acquire) {
+        return Err(
+            "Mode 1 or Mode 2 is using the ChatGPT composer. Try Mode 3 again after it finishes."
+                .to_string(),
+        );
+    }
+    state.active_jobs += 1;
+    state.generation = state.generation.wrapping_add(1);
+    Ok(())
+}
+
 pub(crate) fn run_mode_3_reserved(app: &AppHandle, permit: Mode3JobPermit) -> Result<(), String> {
     let upload_result = (|| {
         ensure_not_cancelled(&permit.token)?;
         let screenshot = screenshot::capture_primary_display_png()?;
         ensure_not_cancelled(&permit.token)?;
-        browser::upload_screenshot_to_chatgpt_input(app, &screenshot.file_name, &screenshot.bytes)?;
+        {
+            let _injection = permit
+                .coordinator
+                .injection_gate
+                .lock()
+                .map_err(|_| "Mode 3 screenshot injection is unavailable.".to_string())?;
+            ensure_not_cancelled(&permit.token)?;
+            browser::upload_screenshot_to_chatgpt_input(
+                app,
+                &screenshot.file_name,
+                &screenshot.bytes,
+            )?;
+        }
+        let file_name = screenshot.file_name.clone();
         drop(screenshot);
+        {
+            let mut state = permit
+                .coordinator
+                .state
+                .lock()
+                .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+            if !permit.token.is_cancelled() {
+                state.pending_review = true;
+            }
+        }
+        browser::wait_for_chatgpt_file_upload_cancellable(
+            app,
+            &file_name,
+            CHATGPT_UPLOAD_TIMEOUT,
+            || permit.token.is_cancelled(),
+        )?;
         Ok::<(), String>(())
     })();
 
@@ -810,7 +911,10 @@ fn finish_mode_3_job(
 
     state.active_jobs = state.active_jobs.saturating_sub(1);
     match upload_result {
-        Ok(()) => state.successful_injections += 1,
+        Ok(()) => {
+            state.successful_injections += 1;
+            state.pending_review = true;
+        }
         Err(error) => state.upload_errors.push(error),
     }
 
@@ -858,21 +962,12 @@ fn finalize_mode_3_batch(
             );
         }
 
-        // This readiness check covers every screenshot currently in the shared composer.
-        // A timeout is intentionally non-fatal: ChatGPT may have discarded only the failed
-        // files while leaving successful attachments ready for submission.
-        let upload_readiness =
-            browser::wait_for_chatgpt_upload_cancellable(app, CHATGPT_UPLOAD_TIMEOUT, || {
-                token.is_cancelled()
-            });
-
         if token.is_cancelled() {
             cancel_mode_3_finalizer(coordinator)?;
             return Err(cancelled_error());
         }
 
-        let readiness_warning = upload_readiness.err();
-        if complete_mode_3_upload_batch(app, coordinator, generation, readiness_warning)? {
+        if complete_mode_3_upload_batch(app, coordinator, generation)? {
             return Ok(());
         }
     }
@@ -882,7 +977,6 @@ fn complete_mode_3_upload_batch(
     app: &AppHandle,
     coordinator: &Arc<Mode3Coordinator>,
     generation: u64,
-    readiness_warning: Option<String>,
 ) -> Result<bool, String> {
     let mut state = coordinator
         .state
@@ -893,11 +987,7 @@ fn complete_mode_3_upload_batch(
         return Ok(false);
     }
 
-    let mut warnings = state.upload_errors.clone();
-    if let Some(warning) = readiness_warning {
-        warnings.push(warning);
-    }
-    let warnings = format_mode_3_warnings(warnings);
+    let warnings = format_mode_3_warnings(state.upload_errors.clone());
     reset_mode_3_state(&mut state);
 
     // Publish while holding the coordinator lock. A new Mode 3 job can only set the
@@ -958,13 +1048,44 @@ fn reset_mode_3_state(state: &mut Mode3CoordinatorState) {
 
 pub fn submit_after_upload(app: &AppHandle) -> Result<(), String> {
     let automation = app.state::<AutomationStore>();
+    let _permit = reserve_mode_3_submission(&automation)?;
 
     run_workflow(app, &automation, AutomationMode::ScreenshotOnly, || {
         browser::submit_chatgpt_when_upload_ready(app)?;
+        automation
+            .mode_3_coordinator
+            .state
+            .lock()
+            .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?
+            .pending_review = false;
         Ok(UploadState::Ready)
     })
     .map(|_| ())
     .map_err(|error| error.message)
+}
+
+fn reserve_mode_3_submission(
+    automation: &AutomationStore,
+) -> Result<CaptionWorkflowPermit, String> {
+    if automation.resetting.load(Ordering::Acquire) {
+        return Err("Automation is resetting. Try again after navigation finishes.".to_string());
+    }
+    let state = automation
+        .mode_3_coordinator
+        .state
+        .lock()
+        .map_err(|_| "Mode 3 coordinator state is unavailable.".to_string())?;
+    if state.active_jobs != 0 || state.finalizing {
+        return Err("Wait for Capture Only to finish uploading before sending.".to_string());
+    }
+    if !state.pending_review {
+        return Err("There are no Capture Only screenshots waiting to be sent.".to_string());
+    }
+    try_reserve_caption_workflow_flag(
+        &automation.caption_workflow_reserved,
+        &automation.cancellation_epoch,
+    )
+    .ok_or_else(|| "The ChatGPT composer is already in use.".to_string())
 }
 
 fn run_workflow(
@@ -1057,6 +1178,7 @@ mod tests {
 
     use super::{
         append_active_profile_prompt, finish_mode_3_job, merge_prompt_text,
+        reserve_caption_while_mode_3_idle, reserve_mode_3_while_caption_idle,
         submit_caption_when_ready, try_reserve_caption_workflow_flag, CancellationToken,
         Mode3Coordinator, Mode3JobPermit,
     };
@@ -1118,6 +1240,57 @@ mod tests {
         assert!(try_reserve_caption_workflow_flag(&reserved, &epoch).is_none());
         drop(first);
         assert!(try_reserve_caption_workflow_flag(&reserved, &epoch).is_some());
+    }
+
+    #[test]
+    fn caption_and_mode_3_reservations_exclude_each_other() {
+        let coordinator = Mode3Coordinator::default();
+        let reserved = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        let caption = reserve_caption_while_mode_3_idle(&coordinator, &reserved, &epoch, false, 0)
+            .expect("caption reservation");
+        assert!(reserve_mode_3_while_caption_idle(
+            &mut coordinator.state.lock().expect("coordinator state"),
+            &reserved,
+        )
+        .is_err());
+        drop(caption);
+
+        reserve_mode_3_while_caption_idle(
+            &mut coordinator.state.lock().expect("coordinator state"),
+            &reserved,
+        )
+        .expect("Mode 3 reservation");
+        assert!(
+            reserve_caption_while_mode_3_idle(&coordinator, &reserved, &epoch, false, 1).is_err()
+        );
+    }
+
+    #[test]
+    fn mode_3_draft_requires_a_current_empty_composer_before_caption_submission() {
+        let coordinator = Mode3Coordinator::default();
+        let reserved = Arc::new(AtomicBool::new(false));
+        let epoch = Arc::new(AtomicU64::new(0));
+        {
+            let mut state = coordinator.state.lock().expect("coordinator state");
+            state.pending_review = true;
+            state.generation = 4;
+        }
+        assert!(
+            reserve_caption_while_mode_3_idle(&coordinator, &reserved, &epoch, false, 4).is_err()
+        );
+        assert!(
+            reserve_caption_while_mode_3_idle(&coordinator, &reserved, &epoch, true, 3).is_err()
+        );
+        let _caption = reserve_caption_while_mode_3_idle(&coordinator, &reserved, &epoch, true, 4)
+            .expect("cleared draft permits caption submission");
+        assert!(
+            !coordinator
+                .state
+                .lock()
+                .expect("coordinator state")
+                .pending_review
+        );
     }
 
     #[test]

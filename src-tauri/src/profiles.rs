@@ -23,6 +23,8 @@ pub struct Profile {
     id: u64,
     name: String,
     prompt: String,
+    #[serde(default)]
+    instruction: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,6 +42,7 @@ impl Default for ProfilesSnapshot {
                 id: 1,
                 name: "Default".to_string(),
                 prompt: DEFAULT_PROFILE_PROMPT.to_string(),
+                instruction: String::new(),
             }],
             active_profile_id: Some(1),
             next_id: 2,
@@ -58,6 +61,7 @@ pub struct SaveProfileRequest {
     id: u64,
     name: String,
     prompt: String,
+    instruction: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,6 +108,7 @@ pub fn profiles_add(
         id,
         name: next_profile_name(&snapshot.profiles),
         prompt: String::new(),
+        instruction: String::new(),
     });
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
@@ -119,6 +124,7 @@ pub fn profiles_save(
 ) -> CommandResult<ProfilesSnapshot> {
     let name = validate_name(&request.name)?;
     let prompt = validate_prompt(&request.prompt)?;
+    let instruction = validate_prompt(&request.instruction)?;
     let mut snapshot = state.snapshot()?.clone();
     let profile = snapshot
         .profiles
@@ -127,6 +133,7 @@ pub fn profiles_save(
         .ok_or_else(ProfileCommandError::not_found)?;
     profile.name = name;
     profile.prompt = prompt;
+    profile.instruction = instruction;
     save_profiles(&app, &snapshot).map_err(ProfileCommandError::storage)?;
     *state.snapshot()? = snapshot.clone();
     emit_profile_state(&app, &snapshot);
@@ -191,6 +198,21 @@ pub fn active_prompt(app: &AppHandle) -> Result<Option<String>, String> {
             .iter()
             .find(|profile| profile.id == active_id)
             .map(|profile| profile.prompt.clone())
+    }))
+}
+
+pub fn active_instruction(app: &AppHandle) -> Result<Option<String>, String> {
+    let store = app.state::<ProfileStore>();
+    let snapshot = store
+        .snapshot
+        .lock()
+        .map_err(|_| "Profile state is unavailable.".to_string())?;
+    Ok(snapshot.active_profile_id.and_then(|active_id| {
+        snapshot
+            .profiles
+            .iter()
+            .find(|profile| profile.id == active_id)
+            .map(|profile| profile.instruction.clone())
     }))
 }
 
@@ -342,11 +364,13 @@ mod tests {
                 id: 1,
                 name: "Default profile".to_string(),
                 prompt: String::new(),
+                instruction: String::new(),
             },
             Profile {
                 id: 2,
                 name: "Profile 3".to_string(),
                 prompt: String::new(),
+                instruction: String::new(),
             },
         ];
         assert_eq!(next_profile_name(&profiles), "Profile 4");
@@ -359,6 +383,7 @@ mod tests {
                 id: 7,
                 name: "Saved".to_string(),
                 prompt: "Prompt".to_string(),
+                instruction: String::new(),
             }],
             active_profile_id: Some(99),
             next_id: 1,
@@ -375,11 +400,13 @@ mod tests {
                     id: 1,
                     name: "Interview".to_string(),
                     prompt: "Be concise".to_string(),
+                    instruction: "Start here".to_string(),
                 },
                 Profile {
                     id: 2,
                     name: "Coding".to_string(),
                     prompt: "Return code first".to_string(),
+                    instruction: String::new(),
                 },
             ],
             active_profile_id: Some(2),
@@ -387,7 +414,15 @@ mod tests {
         };
         let saved = serde_json::to_string(&snapshot).unwrap();
         let restored: ProfilesSnapshot = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.profiles[0].instruction, "Start here");
 
         assert_eq!(restored, snapshot);
+    }
+
+    #[test]
+    fn legacy_profile_without_instruction_loads_with_empty_instruction() {
+        let profile: Profile =
+            serde_json::from_str(r#"{"id":1,"name":"Saved","prompt":"Be concise"}"#).unwrap();
+        assert!(profile.instruction.is_empty());
     }
 }

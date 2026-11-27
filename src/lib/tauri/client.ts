@@ -95,6 +95,18 @@ export function setBrowserWindowOpacity(opacity: number) {
   });
 }
 
+export function setBrowserMouseThrough(enabled: boolean) {
+  return invokeCommand('browser_set_mouse_through', { request: { enabled } });
+}
+
+export function setBrowserContentTransparency(enabled: boolean) {
+  return invokeCommand('browser_set_content_transparency', { request: { enabled } });
+}
+
+export function setBrowserResponseTextColor(color: string) {
+  return invokeCommand('browser_set_response_text_color', { request: { color } });
+}
+
 export function setBrowserScale(scale: number) {
   return invokeCommand('browser_set_scale', {
     request: { scale },

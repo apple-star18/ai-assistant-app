@@ -1,6 +1,6 @@
 {
   "name": "ai-assistant-app",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,8 @@
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml"
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "test:chatgpt-send": "node src-tauri/src/chatgpt-send.test.cjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

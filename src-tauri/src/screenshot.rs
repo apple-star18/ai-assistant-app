@@ -1,3 +1,8 @@
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use windows::Win32::{
     Foundation::HWND,
     Graphics::Gdi::{
@@ -13,6 +18,8 @@ pub struct ScreenshotPng {
     pub bytes: Vec<u8>,
 }
 
+static SCREENSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
 pub fn capture_primary_display_png() -> Result<ScreenshotPng, String> {
     let width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
     let height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
@@ -26,7 +33,14 @@ pub fn capture_primary_display_png() -> Result<ScreenshotPng, String> {
     let png = encode_png(width as u32, height as u32, &mut capture)?;
 
     Ok(ScreenshotPng {
-        file_name: "assistant-screenshot.png".to_string(),
+        file_name: format!(
+            "assistant-screenshot-{}-{}.png",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            SCREENSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ),
         bytes: png,
     })
 }

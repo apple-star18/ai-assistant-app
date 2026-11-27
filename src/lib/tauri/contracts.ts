@@ -18,6 +18,9 @@ export interface BrowserState {
   isLoading: boolean;
   isContentProtected: boolean;
   windowOpacity: number;
+  mouseThrough: boolean;
+  contentTransparency: boolean;
+  responseTextColor: string;
   browserScale: number;
   lastDownload: BrowserDownload | null;
   lastError: string | null;
@@ -87,11 +90,17 @@ export interface HotkeyBindingState {
     | 'shortcutMode1'
     | 'shortcutMode2'
     | 'shortcutMode3'
+    | 'shortcutSubmitCapture'
+    | 'shortcutNewChat'
+    | 'shortcutRefresh'
+    | 'shortcutBackward'
     | 'shortcutMoveUp'
     | 'shortcutMoveDown'
     | 'shortcutMoveRight'
     | 'shortcutMoveLeft'
-    | 'shortcutToggleWindow';
+    | 'shortcutToggleWindow'
+    | 'shortcutMouseThrough'
+    | 'shortcutTypeMessage';
   accelerator: string;
   registered: boolean;
   error: string | null;
@@ -104,6 +113,7 @@ export interface HotkeyBindingRequest {
 
 export interface HotkeyState {
   isRunning: boolean;
+  isTyping: boolean;
   bindings: HotkeyBindingState[];
   lastError: string | null;
 }
@@ -113,6 +123,7 @@ export interface ProfileState {
     id: number;
     name: string;
     prompt: string;
+    instruction: string;
   }>;
   activeProfileId: number | null;
   nextId: number;
@@ -182,6 +193,18 @@ export interface CommandMap {
         opacity: number;
       };
     };
+    response: BrowserState;
+  };
+  browser_set_mouse_through: {
+    args: { request: { enabled: boolean } };
+    response: BrowserState;
+  };
+  browser_set_content_transparency: {
+    args: { request: { enabled: boolean } };
+    response: BrowserState;
+  };
+  browser_set_response_text_color: {
+    args: { request: { color: string } };
     response: BrowserState;
   };
   browser_set_scale: {
@@ -282,6 +305,7 @@ export interface CommandMap {
         id: number;
         name: string;
         prompt: string;
+        instruction: string;
       };
     };
     response: ProfileState;

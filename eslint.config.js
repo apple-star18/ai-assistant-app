@@ -17,6 +17,8 @@ export default tseslint.config(
       'public',
       'src-tauri/target',
       'src-tauri/gen',
+      'src-tauri/src/chatgpt-send.js',
+      'src-tauri/src/chatgpt-send.test.cjs',
       'eslint.config.js',
     ],
   },
