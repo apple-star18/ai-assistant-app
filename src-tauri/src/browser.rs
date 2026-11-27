@@ -1392,13 +1392,27 @@ fn apply_content_transparency_style(
     let script = if enabled {
         let css = format!(
             r#"
-html, body, #__next, #root, main, aside, nav,
+html, body, #__next, #root, main, aside, nav, header,
+#page-header, #thread-bottom-container,
 [class*="sidebar-navigation"], [class*="bg-surface"],
-[class*="bg-surface"]::before, [class*="ComposerLayoutRoot"] {{
+[class*="bg-token-bg"], [class*="bg-main-surface"],
+[class*="ComposerLayoutRoot"], [class*="thread-bottom"] {{
+  background-color: transparent !important;
+  background-image: none !important;
+}}
+#page-header::before, #page-header::after,
+#thread-bottom-container::before, #thread-bottom-container::after,
+[class*="bg-surface"]::before, [class*="bg-surface"]::after,
+[class*="ComposerLayoutRoot"]::before,
+[class*="ComposerLayoutRoot"]::after {{
   background: transparent !important;
 }}
 :root {{
   color-scheme: dark !important;
+  --main-surface-primary: transparent !important;
+  --main-surface-secondary: transparent !important;
+  --sidebar-surface-primary: transparent !important;
+  --sidebar-surface-secondary: transparent !important;
   --token-bg-primary: transparent !important;
   --token-bg-secondary: transparent !important;
   --token-bg-tertiary: transparent !important;
