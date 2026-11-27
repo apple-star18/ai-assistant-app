@@ -1,6 +1,6 @@
 [package]
 name = "ai-assistant-app"
-version = "0.2.7"
+version = "0.2.8"
 description = "Desktop AI assistant application"
 authors = ["AI Assistant App Contributors"]
 license = "MIT"

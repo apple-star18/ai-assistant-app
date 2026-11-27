@@ -1342,6 +1342,10 @@ fn apply_window_content_protection(
         ),
     })?;
 
+    window
+        .set_skip_taskbar(is_content_protected)
+        .map_err(BrowserCommandError::from_tauri)?;
+
     Ok(is_content_protected)
 }
 

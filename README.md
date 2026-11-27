@@ -109,7 +109,7 @@ Window movement uses 50-pixel steps and is clamped to the current monitor work a
 
 - Transparency control adjusts the complete app window from 40% to 100% opacity.
 - Mouse Through starts off on every launch. Its toolbar button and global shortcut toggle the whole window; popovers close when it turns on.
-- Content protection is enabled on every app launch and asks Windows to exclude the app from supported screen-capture workflows. The eye button can change it for the current session.
+- Content protection is enabled on every app launch and asks Windows to exclude the app from supported screen-capture workflows. While it is enabled, the app is hidden from the taskbar; turning it off with the eye button restores the taskbar icon.
 - The browser WebView is kept separate from the toolbar and bottom status bar, so app controls never modify the ChatGPT page layout.
 - Transparency, Settings, and Profiles popovers close when focus moves elsewhere.
 - Dismissing Settings or Profiles by clicking elsewhere does not apply or save pending changes.
